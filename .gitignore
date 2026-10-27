@@ -1,0 +1,32 @@
+# Build output
+bin/
+obj/
+publish/
+artifacts/
+[Dd]ebug/
+[Rr]elease/
+*.user
+*.suo
+
+# IDEs
+.vs/
+.vscode/
+.idea/
+*.DotSettings.user
+
+# Test results
+TestResults/
+*.trx
+coverage*.xml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Never commit client data or credentials
+*.bak
+*.tar.gz
+onedb.xml
+*.vault
+workspaces/
+samples/private/

@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>Pfr.Cli</RootNamespace>
+    <AssemblyName>pfr</AssemblyName>
+    <!-- Single-file, self-contained settings apply when a RuntimeIdentifier is given at publish time. -->
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Pfr.Core\Pfr.Core.csproj" />
+  </ItemGroup>
+
+</Project>

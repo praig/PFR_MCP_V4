@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Shared engine used by both the CLI and the GUI:
+    parsers, storage, rules, locations, credential vault,
+    network tools, reporting, NIOS CSV generation, WAPI client.
+    No UI code belongs here.
+  -->
+  <PropertyGroup>
+    <RootNamespace>Pfr.Core</RootNamespace>
+    <AssemblyName>Pfr.Core</AssemblyName>
+  </PropertyGroup>
+
+</Project>
