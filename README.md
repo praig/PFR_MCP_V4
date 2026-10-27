@@ -8,7 +8,19 @@ Designed to run on **air-gapped** machines as self-contained executables with no
 
 See **[REQUIREMENTS.md](REQUIREMENTS.md)** for the full specification and open decisions.
 
-> Status: initial scaffold. The solution builds a CLI and a GUI shell; no modules are implemented yet.
+> Status: early development. The NIOS backup parser and `pfr inspect` work; the GUI is still a shell.
+
+## Quick start
+
+Summarize a grid backup:
+
+```bash
+dotnet run --project src/Pfr.Cli -- inspect path/to/grid-backup.bak
+dotnet run --project src/Pfr.Cli -- inspect path/to/grid-backup.bak --json > inventory.json
+```
+
+The parser reads only the object types it needs and drops secrets (keys, passwords, tokens)
+before anything else sees them.
 
 ## Layout
 
@@ -35,6 +47,15 @@ End users do **not** need .NET installed; published builds are self-contained.
 dotnet restore
 dotnet build
 dotnet test
+```
+
+To also test against a real backup (kept in the git-ignored `samples/private/` folder):
+
+```bash
+# PowerShell
+$env:PFR_SAMPLE_BACKUP = "samples\private\my-grid.bak"; dotnet test
+# bash
+PFR_SAMPLE_BACKUP=samples/private/my-grid.bak dotnet test
 ```
 
 Run during development:

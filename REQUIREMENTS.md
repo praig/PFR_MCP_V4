@@ -64,6 +64,10 @@ Scope is **NIOS (on-prem grids)**. Forward Networks integration is **deferred** 
 ## 4. Inputs
 
 1. **Grid backup** (`.bak` / `.tar.gz` containing `onedb.xml`) — **primary source**.
+   - Grid backups contain secrets (private keys, encrypted passwords, TSIG keys, tokens, license strings).
+     The parser reads only an **allowlist of object types**, drops any **sensitive property** (by name
+     pattern or encrypted `{0}_{aes}_` value) before it reaches the rest of the app, and streams the
+     backup in place without extracting it to disk. Secrets are never stored in the client database.
 2. **NIOS CSV exports** (Global CSV Export or per-object) — fully supported, mapped to the same data model as backups.
 3. **WAPI**
    - Pull a fresh grid backup and parse it through the same pipeline.

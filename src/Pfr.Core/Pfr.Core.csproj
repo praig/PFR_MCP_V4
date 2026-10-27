@@ -11,4 +11,8 @@
     <AssemblyName>Pfr.Core</AssemblyName>
   </PropertyGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="Pfr.Core.Tests" />
+  </ItemGroup>
+
 </Project>
