@@ -57,7 +57,7 @@ public sealed class FilterableTable : UserControl
             {
                 Header = column.Header,
                 // Bound to the row, so recycled rows show the right values while scrolling.
-                CellTemplate = new FuncDataTemplate<TableRow>((_, _) => TableCells.Text(index), supportsRecycling: true),
+                CellTemplate = new FuncDataTemplate<TableRow>((_, _) => TableCells.Text(index, column.Kind), supportsRecycling: true),
                 SortMemberPath = $"{nameof(TableRow.Cells)}[{index}]",
                 CustomSortComparer = new ColumnComparer(index, column.Kind),
                 CanUserSort = true,

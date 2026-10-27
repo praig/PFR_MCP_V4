@@ -80,7 +80,7 @@ public sealed class TreeTable : UserControl
                 Header = column.Header,
                 CellTemplate = index == 0
                     ? new FuncDataTemplate<TreeRow>((_, _) => new TreeCell(this), supportsRecycling: true)
-                    : new FuncDataTemplate<TreeRow>((_, _) => TableCells.Text(index), supportsRecycling: true),
+                    : new FuncDataTemplate<TreeRow>((_, _) => TableCells.Text(index, column.Kind), supportsRecycling: true),
                 SortMemberPath = $"Cells[{index}]",
                 CanUserSort = true,
                 Width = column.Width is { } w ? new DataGridLength(w) : DataGridLength.Auto,
@@ -332,7 +332,7 @@ public static class TableCells
     /// A text cell bound to the row (DataContext), so it stays correct when the
     /// grid recycles row containers while scrolling.
     /// </summary>
-    public static TextBlock Text(int index)
+    public static TextBlock Text(int index, ColumnKind kind = ColumnKind.Text)
     {
         var text = new TextBlock
         {
@@ -340,16 +340,36 @@ public static class TableCells
             Margin = new Thickness(12, 0),
             TextTrimming = TextTrimming.CharacterEllipsis,
         };
-        text.Bind(TextBlock.TextProperty, new Binding(".")
+        var cell = new FuncValueConverter<object?, string>(row => row switch
         {
-            Mode = BindingMode.OneWay,
-            Converter = new FuncValueConverter<object?, string>(row => row switch
-            {
-                TableRow t => t.Cells[index],
-                TreeRow t => t.Cells[index],
-                _ => "",
-            }),
+            TableRow t => t.Cells[index],
+            TreeRow t => t.Cells[index],
+            _ => "",
         });
+        text.Bind(TextBlock.TextProperty, new Binding(".") { Mode = BindingMode.OneWay, Converter = cell });
+
+        if (kind == ColumnKind.Status)
+        {
+            text.FontWeight = FontWeight.SemiBold;
+            text.Bind(TextBlock.ForegroundProperty, new Binding(".")
+            {
+                Mode = BindingMode.OneWay,
+                Converter = new FuncValueConverter<object?, IBrush?>(row =>
+                    StatusBrush(cell.Convert(row, typeof(string), null, System.Globalization.CultureInfo.InvariantCulture) as string)),
+            });
+        }
         return text;
     }
+
+    private static readonly IBrush Danger = new SolidColorBrush(Color.Parse("#F47067"));
+    private static readonly IBrush Warning = new SolidColorBrush(Color.Parse("#E5B54B"));
+
+    /// <summary>Red for expired, amber for expiring, otherwise the default text color.</summary>
+    public static IBrush? StatusBrush(string? status) => status switch
+    {
+        null or "" => null,
+        _ when status.StartsWith("Expired", StringComparison.OrdinalIgnoreCase) => Danger,
+        _ when status.StartsWith("Expires", StringComparison.OrdinalIgnoreCase) => Warning,
+        _ => null,
+    };
 }

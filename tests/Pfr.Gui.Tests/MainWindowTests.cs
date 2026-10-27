@@ -63,7 +63,7 @@ public class MainWindowTests
         Assert.NotNull(window.LoadedInventory);
         Assert.StartsWith("Loaded", window.StatusMessage);
         Assert.Equal(
-            ["Overview", "Members", "DNS views", "Zones", "Networks", "DHCP ranges", "DHCP failover", "DNS records"],
+            ["Overview", "Members", "Licenses", "DNS views", "Zones", "Networks", "DHCP ranges", "DHCP failover", "DNS records"],
             window.Inventory.SectionNames);
 
         var index = 3;

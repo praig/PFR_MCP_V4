@@ -100,6 +100,34 @@ public class TreeTableTests
     }
 
     [Fact]
+    public void Licenses_tree_is_grid_wide_then_members()
+    {
+        var licenses = Section("Licenses");
+
+        var gridWide = licenses.Roots[0];
+        Assert.StartsWith("Grid-wide", gridWide.Cells[0]);
+        Assert.Equal("Reporting Subscription", Assert.Single(gridWide.Children).Cells[0]);
+
+        // Then one row per member, in host name order.
+        Assert.Equal(["gm.lab.test", "gmc.lab.test", "ns1.lab.test"],
+            licenses.Roots.Skip(1).Select(r => r.Cells[0].Split(' ')[0]));
+
+        var gm = licenses.Roots[1];
+        Assert.Equal("Next: 2100-01-01", gm.Cells[4]);
+        var dtc = gm.Children.Single(r => r.Cells[1] == "dtc");
+        Assert.Equal(["DNS Traffic Control", "dtc", "SN-GM", "Static", "2100-01-01", ""], dtc.Cells);
+        Assert.Equal("Permanent", gm.Children.Single(r => r.Cells[1] == "dns").Cells[4]);
+
+        var gmc = licenses.Roots[2];
+        Assert.Equal("Expired", gmc.Children.Single(r => r.Cells[1] == "sw_tp").Cells[5]);
+        Assert.Equal(("Next: 2020-01-01", "Expired"), (gmc.Cells[4], gmc.Cells[5])); // member row flags it too
+
+        // HA member: one row per node, labelled with position and serial.
+        var ha = licenses.Roots[3];
+        Assert.Equal(["Node 1 · SN-A", "Node 2 · SN-B"], ha.Children.Select(r => r.Cells[2]));
+    }
+
+    [Fact]
     public void Dhcp_tree_is_network_view_then_network_then_ranges()
     {
         var dhcp = Section("DHCP ranges");
@@ -193,6 +221,19 @@ public class TreeTableTests
         {
             Assert.True(table.VisibleRows[i].Depth <= table.VisibleRows[i - 1].Depth + 1);
         }
+    }
+
+    [AvaloniaFact]
+    public void Status_cells_are_colored_by_expiry()
+    {
+        Assert.NotNull(TableCells.StatusBrush("Expired"));
+        Assert.NotNull(TableCells.StatusBrush("Expires in 3 days"));
+        Assert.NotEqual(TableCells.StatusBrush("Expired"), TableCells.StatusBrush("Expires in 3 days"));
+        Assert.Null(TableCells.StatusBrush(""));
+
+        var cell = TableCells.Text(0, ColumnKind.Status);
+        cell.DataContext = new TreeRow(["Expired"]);
+        Assert.Equal(TableCells.StatusBrush("Expired"), cell.Foreground);
     }
 
     [AvaloniaFact]

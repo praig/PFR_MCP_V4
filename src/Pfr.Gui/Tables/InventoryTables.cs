@@ -12,6 +12,7 @@ public static class InventoryTables
         return
         [
             Members(inv),
+            Licenses(inv),
             Views(inv, lookup),
             Zones(inv, lookup),
             Networks(inv, lookup),
@@ -45,6 +46,52 @@ public static class InventoryTables
                 YesNo(m.HaEnabled), m.Nodes.Count.ToString(), m.UpgradeGroup ?? "",
             ]);
         }).ToList());
+
+    private static TreeTableDefinition Licenses(GridInventory inv)
+    {
+        var now = DateTimeOffset.UtcNow;
+        string Expiry(DateTimeOffset? e) => e is { } d ? d.ToString("yyyy-MM-dd") : "Permanent";
+        string Node(GridLicense l, GridMember m) =>
+            m.Nodes.Count > 1 ? $"Node {l.NodePosition + 1} · {l.NodeSerial}" : l.NodeSerial ?? "";
+
+        TreeRow LicenseRow(GridLicense l, string node) => new(
+        [
+            l.Name, l.Type, node, l.Kind ?? "", Expiry(l.Expires), l.Status(now),
+        ]);
+
+        var roots = new List<TreeRow>();
+
+        var gridWide = inv.Licenses.Where(l => l.IsGridWide).ToList();
+        if (gridWide.Count > 0)
+        {
+            var group = new TreeRow(
+                [$"Grid-wide   ({Plural(gridWide.Count, "license")})", "", "Applies to all members", "", "", ""],
+                isGroup: true) { IsExpanded = true };
+            foreach (var l in gridWide) group.Add(LicenseRow(l, ""));
+            roots.Add(group);
+        }
+
+        foreach (var m in inv.Members)
+        {
+            var own = inv.Licenses.Where(l => l.MemberOid == m.Oid).ToList();
+            var next = m.NextLicenseExpiry;
+            var memberRow = new TreeRow(
+            [
+                $"{m.HostName}   ({Plural(own.Count, "license")})", "", m.Role, "",
+                next is null ? "" : $"Next: {Expiry(next)}", GridLicense.ExpiryStatus(next, now),
+            ], isGroup: true);
+            foreach (var l in own) memberRow.Add(LicenseRow(l, Node(l, m)));
+            roots.Add(memberRow);
+        }
+
+        return new TreeTableDefinition(
+            "Licenses",
+            [
+                new("License", Width: 285), new("Code", Width: 100), new("Node", Width: 175),
+                new("Kind", Width: 100), new("Expires", Width: 170), new("Status", ColumnKind.Status, 170),
+            ],
+            roots, "licenses");
+    }
 
     private static TableDefinition Views(GridInventory inv, Lookup lk) => new(
         "DNS views",

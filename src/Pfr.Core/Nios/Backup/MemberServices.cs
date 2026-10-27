@@ -32,16 +32,14 @@ internal static class MemberServices
     ];
 
     private const string ReportingIndexerType = "reporting.indexer_vnode";
-    private const string LicenseType = "one.product_license";
 
     /// <summary>Object types the parser must read for service and license detection.</summary>
     public static IEnumerable<string> RequiredTypes =>
-        Flags.Select(f => f.ObjectType).Append(ReportingIndexerType).Append(LicenseType).Distinct();
+        Flags.Select(f => f.ObjectType).Append(ReportingIndexerType).Distinct();
 
     public static void Apply(GridInventory inv, IReadOnlyDictionary<string, List<OneDbObject>> byType)
     {
-        ApplyLicenses(inv, byType[LicenseType]);
-
+        // Requires LicenseParser.Apply to have run (DTC depends on member licenses).
         // Which members have each flag set: service -> member oids.
         var enabled = new Dictionary<string, HashSet<int>>();
         foreach (var flag in Flags)
@@ -83,34 +81,4 @@ internal static class MemberServices
 
     /// <summary>Per-member objects link to the member through "virtual_node" or "parent".</summary>
     private static int? MemberOid(OneDbObject o) => o.GetInt("virtual_node") ?? o.GetInt("parent");
-
-    private static void ApplyLicenses(GridInventory inv, List<OneDbObject> licenses)
-    {
-        // Licenses belong to physical nodes; map them up to members.
-        var memberByNode = new Dictionary<int, GridMember>();
-        foreach (var m in inv.Members)
-        {
-            foreach (var n in m.Nodes)
-            {
-                if (n.PhysicalOid is { } p) memberByNode[p] = m;
-            }
-        }
-
-        foreach (var lic in licenses)
-        {
-            var type = lic.Get("license_type");
-            if (string.IsNullOrEmpty(type) || lic.GetInt("pnode") is not { } node
-                || !memberByNode.TryGetValue(node, out var member))
-            {
-                continue;
-            }
-
-            if (!member.Licenses.Contains(type, StringComparer.OrdinalIgnoreCase))
-            {
-                member.Licenses.Add(type);
-            }
-        }
-
-        foreach (var m in inv.Members) m.Licenses.Sort(StringComparer.OrdinalIgnoreCase);
-    }
 }

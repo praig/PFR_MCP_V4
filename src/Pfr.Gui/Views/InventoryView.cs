@@ -173,7 +173,7 @@ public sealed class InventoryView : UserControl
 
         var nets = inv.Networks;
         Card("Members", inv.Members.Count,
-            $"{inv.Members.Count(m => m.HaEnabled)} HA pairs");
+            Plural(inv.Members.Count(m => m.HaEnabled), "HA pair"));
         Card("DNS views", inv.DnsViews.Count,
             $"{inv.DnsViews.Count(v => v.RecursionEnabled)} with recursion");
         Card("Zones", inv.Zones.Count,
@@ -181,22 +181,27 @@ public sealed class InventoryView : UserControl
         Card("DNS records", inv.Records.Count,
             string.Join(" · ", inv.Records.GroupBy(r => r.Type).OrderByDescending(g => g.Count()).Take(4)
                 .Select(g => $"{g.Count()} {g.Key}"))
-            + $"\n{inv.HostCount:N0} host objects");
+            + $"\n{Plural(inv.HostCount, "host object")}");
         Card("Networks", nets.Count(n => !n.IsContainer),
-            $"{nets.Count(n => n.IsContainer)} containers · {inv.NetworkViews.Count} network views");
+            $"{Plural(nets.Count(n => n.IsContainer), "container")} · {Plural(inv.NetworkViews.Count, "network view")}");
         Card("DHCP ranges", inv.DhcpRanges.Count,
             $"{inv.DhcpRanges.Count(r => r.AssociationType is "Failover" or "MsFailover")} in failover");
 
         var facts = new Grid
         {
             ColumnDefinitions = new ColumnDefinitions("Auto,*"),
-            RowDefinitions = new RowDefinitions("Auto,Auto,Auto"),
+            RowDefinitions = new RowDefinitions("Auto,Auto,Auto,Auto"),
             Margin = new Thickness(0, 0, 0, 20),
         };
-        void Fact(int row, string label, string value)
+        void Fact(int row, string label, string value, IBrush? color = null)
         {
             var l = new TextBlock { Text = label, Opacity = 0.7, Margin = new Thickness(0, 2, 24, 2) };
             var v = new TextBlock { Text = value, Margin = new Thickness(0, 2), TextWrapping = TextWrapping.Wrap };
+            if (color is not null)
+            {
+                v.Foreground = color;
+                v.FontWeight = FontWeight.SemiBold;
+            }
             Grid.SetRow(l, row);
             Grid.SetRow(v, row);
             Grid.SetColumn(v, 1);
@@ -206,6 +211,13 @@ public sealed class InventoryView : UserControl
         Fact(0, "NIOS version", inv.NiosVersion ?? "unknown");
         Fact(1, "Grid Master", gm is null ? "unknown" : $"{gm.HostName}  ({gm.Ipv4Address})");
         Fact(2, "Master candidates", gmc.Count == 0 ? "none" : string.Join(", ", gmc));
+        var nextExpiry = inv.Members.Select(m => m.NextLicenseExpiry)
+            .Concat(inv.Licenses.Select(l => l.Expires)).Where(e => e is not null).Min();
+        var expiryStatus = GridLicense.ExpiryStatus(nextExpiry, DateTimeOffset.UtcNow);
+        Fact(3, "Next license expiry", nextExpiry is { } ne
+            ? $"{ne:yyyy-MM-dd}" + (expiryStatus.Length > 0 ? $"  ({expiryStatus})" : "")
+            : "none (all permanent)",
+            TableCells.StatusBrush(expiryStatus));
 
         return new ScrollViewer
         {
@@ -225,6 +237,8 @@ public sealed class InventoryView : UserControl
             },
         };
     }
+
+    private static string Plural(int count, string noun) => $"{count:N0} {noun}{(count == 1 ? "" : "s")}";
 
     private sealed record SectionItem(string Name, int? Count)
     {

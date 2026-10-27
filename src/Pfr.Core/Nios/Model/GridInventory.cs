@@ -18,6 +18,7 @@ public sealed class GridInventory
     public List<DhcpRange> DhcpRanges { get; } = [];
     public List<FailoverAssociation> FailoverAssociations { get; } = [];
     public List<DnsRecord> Records { get; } = [];
+    public List<GridLicense> Licenses { get; } = [];
 
     /// <summary>Host objects in DNS zones (each also appears as A/AAAA/PTR/CNAME records).</summary>
     public int HostCount { get; set; }
@@ -46,6 +47,9 @@ public sealed class GridMember
 
     /// <summary>License types installed on this member's nodes (e.g. dns, dhcp, dtc). Never the license keys.</summary>
     public List<string> Licenses { get; } = [];
+
+    /// <summary>Earliest expiry among licenses that apply to this member, if any expire.</summary>
+    public DateTimeOffset? NextLicenseExpiry { get; set; }
 
     public string Role =>
         IsGridMaster ? "Grid Master"

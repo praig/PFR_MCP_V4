@@ -46,7 +46,12 @@ internal static class OneDbFixture
 
         // Licenses (per physical node). license_string must never be read.
         O("one.product_license", ("pnode", "0"), ("license_type", "dns"), ("license_string", "LICENSEKEY-GM")),
-        O("one.product_license", ("pnode", "0"), ("license_type", "dtc"), ("license_string", "LICENSEKEY-GM2")),
+        O("one.product_license", ("pnode", "0"), ("license_type", "dtc"), ("license_string", "LICENSEKEY-GM2"),
+            ("license_kind", "STATIC"), ("expiry_date", "4102444800")), // 2100-01-01
+        O("one.product_license", ("pnode", "10"), ("license_type", "sw_tp"), ("license_string", "LICENSEKEY-GMC2"),
+            ("license_kind", "STATIC"), ("expiry_date", "1577836800")), // 2020-01-01: expired
+        O("one.license_grid_wide", ("license_type", "rpt_sub"), ("license_limit", "0"), ("cluster", "0")),
+        O("one.vnode_license", ("parent", "0"), ("next_expiry", "4102444800"), ("valid_licenses", "dns dtc rpt_sub")),
         O("one.product_license", ("pnode", "10"), ("license_type", "dns"), ("license_string", "LICENSEKEY-GMC")),
         O("one.product_license", ("pnode", "20"), ("license_type", "dtc"), ("license_string", "LICENSEKEY-A")),
         O("one.product_license", ("pnode", "21"), ("license_type", "dtc"), ("license_string", "LICENSEKEY-B")),
