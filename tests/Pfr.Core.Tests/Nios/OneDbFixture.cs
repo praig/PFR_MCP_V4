@@ -34,11 +34,34 @@ internal static class OneDbFixture
             ("is_master", "false"), ("is_potential_master", "true"), ("ha_enabled", "0")),
         O("one.virtual_node", ("virtual_oid", "16"), ("host_name", "ns1.lab.test"), ("virtual_ip", "10.0.0.3"),
             ("is_master", "false"), ("is_potential_master", "false"), ("ha_enabled", "1")),
-        O("one.physical_node", ("virtual_node", "0"), ("position", "0"), ("hwtype", "IB-V926"),
+        O("one.physical_node", ("physical_oid", "0"), ("virtual_node", "0"), ("position", "0"), ("hwtype", "IB-V926"),
             ("serial_number", "SN-GM"), ("public_ip_address", "10.0.0.1")),
-        O("one.physical_node", ("virtual_node", "7"), ("position", "0"), ("hwtype", "IB-V926")),
-        O("one.physical_node", ("virtual_node", "16"), ("position", "1"), ("hwtype", "IB-1415"), ("serial_number", "SN-B")),
-        O("one.physical_node", ("virtual_node", "16"), ("position", "0"), ("hwtype", "IB-1415"), ("serial_number", "SN-A")),
+        O("one.physical_node", ("physical_oid", "10"), ("virtual_node", "7"), ("position", "0"), ("hwtype", "IB-V926")),
+        O("one.physical_node", ("physical_oid", "21"), ("virtual_node", "16"), ("position", "1"), ("hwtype", "IB-1415"),
+            ("serial_number", "SN-B")),
+        O("one.physical_node", ("physical_oid", "20"), ("virtual_node", "16"), ("position", "0"), ("hwtype", "IB-1415"),
+            ("serial_number", "SN-A")),
+
+        // Licenses (per physical node). license_string must never be read.
+        O("one.product_license", ("pnode", "0"), ("license_type", "dns"), ("license_string", "LICENSEKEY-GM")),
+        O("one.product_license", ("pnode", "0"), ("license_type", "dtc"), ("license_string", "LICENSEKEY-GM2")),
+        O("one.product_license", ("pnode", "10"), ("license_type", "dns"), ("license_string", "LICENSEKEY-GMC")),
+        O("one.product_license", ("pnode", "20"), ("license_type", "dtc"), ("license_string", "LICENSEKEY-A")),
+        O("one.product_license", ("pnode", "21"), ("license_type", "dtc"), ("license_string", "LICENSEKEY-B")),
+
+        // Services. GM: DNS+DHCP+NTP (+DTC via license). GMC: DNS+TFTP, no DTC license. ns1: DHCP only + reporting.
+        O("dns.member_dns_properties", ("virtual_node", "0"), ("service_enabled", "true")),
+        O("dns.member_dns_properties", ("virtual_node", "7"), ("service_enabled", "true")),
+        O("dns.member_dns_properties", ("virtual_node", "16"), ("service_enabled", "false")),
+        O("dns.member_dhcp_properties", ("virtual_node", "0"), ("service_enabled", "true")),
+        O("dns.member_dhcp_properties", ("virtual_node", "16"), ("service_enabled", "true")),
+        O("one.vnode_time", ("virtual_node", "0"), ("ntp_service_enabled", "true")),
+        O("one.vnode_time", ("virtual_node", "7"), ("ntp_service_enabled", "false")),
+        O("one.member_tftp_properties", ("virtual_node", "7"), ("tftp_enabled", "true"), ("http_enabled", "false"),
+            ("ftp_enabled", "false")),
+        O("atp.member_atp_restart", ("parent", "16"), ("service_enabled", "false")),
+        O("reporting.member_reporting_properties", ("parent", "0"), ("enable", "true")),
+        O("reporting.indexer_vnode", ("parent", "0"), ("vnode", "16")),
 
         O("dns.network_view", ("id", "0"), ("name", "default")),
 

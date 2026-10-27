@@ -58,6 +58,21 @@ public class OneDbReaderTests
     public void Parser_allowlist_excludes_secret_object_types()
     {
         Assert.DoesNotContain(BackupParser.AllowedTypes, t =>
-            t.Contains("private_key") || t.Contains("certificate") || t.Contains("admin") || t.Contains("license"));
+            t.Contains("private_key") || t.Contains("certificate") || t.Contains("admin"));
+    }
+
+    [Fact]
+    public void License_keys_are_never_read()
+    {
+        var reader = new OneDbReader(["one.product_license"]);
+        var licenses = reader.Read(OneDbFixture.XmlStream()).ToList();
+
+        Assert.NotEmpty(licenses);
+        Assert.All(licenses, l =>
+        {
+            Assert.False(l.Properties.ContainsKey("license_string"));
+            Assert.NotNull(l.Get("license_type"));
+        });
+        Assert.DoesNotContain(licenses.SelectMany(l => l.Properties.Values), v => v.Contains("LICENSEKEY"));
     }
 }

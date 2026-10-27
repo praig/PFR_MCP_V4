@@ -38,6 +38,12 @@ public sealed class GridMember
     public string? UpgradeGroup { get; set; }
     public List<GridNode> Nodes { get; } = [];
 
+    /// <summary>Services enabled on this member, in display order (e.g. DNS, DHCP, DTC, NTP).</summary>
+    public List<string> Services { get; } = [];
+
+    /// <summary>License types installed on this member's nodes (e.g. dns, dhcp, dtc). Never the license keys.</summary>
+    public List<string> Licenses { get; } = [];
+
     public string Role =>
         IsGridMaster ? "Grid Master"
         : IsGridMasterCandidate ? "Grid Master Candidate"
@@ -47,6 +53,8 @@ public sealed class GridMember
 /// <summary>A physical or virtual appliance; an HA member has two.</summary>
 public sealed class GridNode
 {
+    /// <summary>Internal node id; licenses reference it.</summary>
+    public int? PhysicalOid { get; set; }
     public int Position { get; set; }
     public string? HardwareType { get; set; }
     public string? Platform { get; set; }

@@ -34,6 +34,24 @@ public class BackupParserTests
     }
 
     [Fact]
+    public void Detects_member_services_in_display_order()
+    {
+        var inv = Parse();
+        Assert.Equal(["DNS", "DHCP", "DTC", "NTP"], inv.Members.Single(m => m.Oid == 0).Services);
+        Assert.Equal(["DNS", "TFTP"], inv.Members.Single(m => m.Oid == 7).Services); // no DTC license
+        // DTC license but DNS off -> no DTC; reporting indexer -> Reporting; ATP flag false -> not listed.
+        Assert.Equal(["DHCP", "Reporting"], inv.Members.Single(m => m.Oid == 16).Services);
+    }
+
+    [Fact]
+    public void Maps_node_licenses_to_members()
+    {
+        var inv = Parse();
+        Assert.Equal(["dns", "dtc"], inv.Members.Single(m => m.Oid == 0).Licenses);
+        Assert.Equal(["dtc"], inv.Members.Single(m => m.Oid == 16).Licenses); // both HA nodes, de-duplicated
+    }
+
+    [Fact]
     public void Builds_views_with_display_names()
     {
         var inv = Parse();

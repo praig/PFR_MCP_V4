@@ -14,6 +14,7 @@ public static class BackupParser
     /// </summary>
     public static readonly IReadOnlyList<string> AllowedTypes =
     [
+        .. MemberServices.RequiredTypes,
         "one.cluster",
         "one.virtual_node",
         "one.physical_node",
@@ -75,6 +76,7 @@ public static class BackupParser
         AddNetworks(inv, byType);
         AddDhcp(inv, byType);
         AddRecords(inv, byType);
+        MemberServices.Apply(inv, byType);
         return inv;
     }
 
@@ -102,6 +104,7 @@ public static class BackupParser
             if (inv.FindMember(p.GetInt("virtual_node")) is not { } member) continue;
             member.Nodes.Add(new GridNode
             {
+                PhysicalOid = p.GetInt("physical_oid"),
                 Position = p.GetInt("position") ?? 0,
                 HardwareType = NullIfEmpty(p.Get("hwtype")),
                 Platform = NullIfEmpty(p.Get("hwplatform")),

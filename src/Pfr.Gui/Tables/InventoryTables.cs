@@ -25,7 +25,8 @@ public static class InventoryTables
     private static TableDefinition Members(GridInventory inv) => new(
         "Members",
         [
-            new("Host name", Width: 230), new("Role"), new("IPv4", ColumnKind.Ip), new("IPv6", ColumnKind.Ip),
+            new("Host name", Width: 230), new("Role"), new("Services", Width: 260),
+            new("IPv4", ColumnKind.Ip), new("IPv6", ColumnKind.Ip),
             new("Model"), new("Platform"), new("Serial number"), new("HA"), new("Nodes", ColumnKind.Number),
             new("Upgrade group"),
         ],
@@ -34,7 +35,7 @@ public static class InventoryTables
             var node = m.Nodes.FirstOrDefault();
             return new TableRow(
             [
-                m.HostName, m.Role, m.Ipv4Address ?? "", m.Ipv6Address ?? "",
+                m.HostName, m.Role, string.Join(", ", m.Services), m.Ipv4Address ?? "", m.Ipv6Address ?? "",
                 string.Join(", ", m.Nodes.Select(n => n.HardwareType).Distinct()),
                 node?.Hypervisor ?? node?.Platform ?? "",
                 string.Join(", ", m.Nodes.Select(n => n.SerialNumber).Where(s => s is not null)),

@@ -20,13 +20,14 @@ public static class InventorySummary
             {
                 m.HostName,
                 m.Role,
+                string.Join(", ", m.Services),
                 m.Ipv4Address ?? "",
                 node?.HardwareType ?? "",
                 m.HaEnabled ? $"HA ({m.Nodes.Count} nodes)" : "",
                 m.UpgradeGroup ?? "",
             };
         }).ToList();
-        AppendTable(sb, ["Host name", "Role", "IPv4", "Model", "HA", "Upgrade group"], rows);
+        AppendTable(sb, ["Host name", "Role", "Services", "IPv4", "Model", "HA", "Upgrade group"], rows);
         sb.AppendLine();
 
         sb.AppendLine($"DNS views ({inv.DnsViews.Count})");
