@@ -6,17 +6,17 @@ namespace Pfr.Core;
 /// </summary>
 public enum AppModule
 {
-    /// <summary>Client workspace and tracking (REQUIREMENTS §8).</summary>
+    /// <summary>Client workspace and tracking (REQUIREMENTS §9).</summary>
     ClientWorkspace,
 
-    /// <summary>Inventory and locations (REQUIREMENTS §9).</summary>
+    /// <summary>Inventory and locations (REQUIREMENTS §10).</summary>
     Inventory,
 
-    /// <summary>Ping, SNMP, SSH and DNS tools (REQUIREMENTS §10).</summary>
+    /// <summary>Ping, SNMP, SSH and DNS tools (REQUIREMENTS §11).</summary>
     NetworkTools,
 
-    /// <summary>Health check / audit, including CNAME resolution (REQUIREMENTS §11).</summary>
-    HealthCheck,
+    /// <summary>Predefined reports (health checks, CNAME resolution…) and a data explorer (REQUIREMENTS §12).</summary>
+    Reports,
 }
 
 public static class ModuleCatalog
@@ -29,7 +29,7 @@ public static class ModuleCatalog
             "Grid members, DNS, IPAM and DHCP objects with site locations."),
         (AppModule.NetworkTools, "Network tools",
             "Ping, SNMP, SSH console and command capture, DNS lookups."),
-        (AppModule.HealthCheck, "Health check",
-            "Rule-based audit, CNAME resolution report and remediation change sets."),
+        (AppModule.Reports, "Reports",
+            "Predefined reports (health checks, CNAME resolution, licenses…), a data explorer and remediation change sets."),
     ];
 }

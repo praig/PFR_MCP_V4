@@ -56,6 +56,19 @@ public static class BackupParser
 
     private const string NoAddress = "255.255.255.255";
 
+    /// <summary>
+    /// Every grid must have a name: it's how a client's grids are told apart.
+    /// </summary>
+    /// <exception cref="InvalidDataException">The inventory has no grid name.</exception>
+    public static void EnsureGridName(GridInventory inventory, string sourceName)
+    {
+        if (string.IsNullOrWhiteSpace(inventory.GridName))
+        {
+            throw new InvalidDataException(
+                $"{sourceName} has no grid name, so the grid can't be identified. The backup was not loaded.");
+        }
+    }
+
     public static GridInventory ParseFile(string path)
     {
         using var stream = BackupSource.OpenOneDb(path);

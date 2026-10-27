@@ -1,6 +1,6 @@
 # PFR_MCP_V4 — Requirements
 
-Status: **Draft v0.2** — updated 2026-10-27. Items marked **[PENDING]** are open decisions (see [Open decisions](#14-open-decisions)).
+Status: **Draft v0.3** — updated 2026-10-27. Items marked **[PENDING]** are open decisions (see [Open decisions](#14-open-decisions)).
 Items marked **✅** are implemented.
 
 ---
@@ -123,7 +123,8 @@ Scope is **NIOS (on-prem grids)**. Forward Networks integration is **deferred** 
 ## 8. Application shell (GUI) ✅
 
 - Header: product and version, loaded grid (name · NIOS version · file), **Open backup…**.
-- Module tabs: Clients, Inventory, Network tools, Health check. Opens on Inventory.
+- Module tabs: Clients, Inventory, Network tools, **Reports**. Opens on Clients.
+- Header **Client › Grid switcher**; **save bar** for backups not yet saved to a client.
 - Status bar with load results and errors.
 - A backup can also be opened from the command line: `PFR <backup file>`.
 - Backups are parsed off the UI thread; opening another backup replaces the current one.
@@ -138,18 +139,36 @@ Scope is **NIOS (on-prem grids)**. Forward Networks integration is **deferred** 
 
 ---
 
-## 9. Module 1 — Client workspace and tracking
+## 9. Module 1 — Client workspaces ✅ (first version)
 
-- One workspace per client.
-- Contacts, notes, engagement log.
-- Multiple imports per client over time, kept as dated snapshots.
-- Findings tracked with status: open / accepted / remediated.
-- Comparison between engagements ("what changed since last time").
-- Network tool results saved per client with timestamps.
-- Design details: see §9.1. [PENDING] decisions are listed in §14.
+### 9.1 Structure
+- **Client** → contacts, notes, engagement log, and one or more **grids**.
+- **Grid** → identified by the **grid name** inside its backups; has a display name (renameable) and dated **snapshots**.
+- **Snapshot** → the parsed inventory of one backup (**no secrets**), plus the source file's name, size and SHA-256 and an optional label. The original backup is not kept.
+- An import goes to the client's grid with the same grid name (even if the grid was renamed), or creates a new grid. Importing the same file twice is allowed and noted.
+- **A backup without a grid name is refused** — not loaded, not stored — in the GUI, CLI (`inspect`, `import`) and core, because the grid can't be identified.
 
-### 9.1 Workspace design
-_(To be completed with the decisions in §14 before implementation.)_
+### 9.2 Storage and security
+- Data lives in a **`PfrData` folder next to the application**, so app and data travel together (e.g. on a USB drive). Overridable with `PFR_DATA_DIR` or the CLI's `--data`.
+- **Encrypted with a master password:** PBKDF2-SHA256 (600,000 iterations, random salt) derives the key; each file is AES-256-GCM with a fresh nonce and its relative path bound in, so tampering or moving files between clients is detected. Folder names are random ids — client and grid names never appear unencrypted. Writes are atomic.
+- The key is held only in memory: **Lock** (and closing the app) forgets it. Locking also clears any client grid shown in Inventory.
+- A forgotten master password cannot be recovered (stated at setup). The same master password will protect the credential vault (§7).
+
+### 9.3 Working with clients and grids (GUI)
+- **Clients tab:** first-run setup (create master password), unlock, client list with each client's **grids beneath it**; clicking a grid opens its latest snapshot.
+- **Client page:** *Details* (name, notes, contacts), *Grids* (import backup, save the grid open in Inventory, open latest, rename, delete; snapshots per grid with open/delete), *Engagement log* (dated entries with title and text, optionally linked to a grid snapshot).
+- **Header switcher** lists every *Client › Grid*; choosing one opens its latest snapshot **instantly — no backup needed**.
+- The **last grid viewed is reopened** automatically after unlock.
+- A backup opened with **Open backup…** shows a **save bar** to store it under a client.
+
+### 9.4 CLI
+`pfr init`, `pfr clients`, `pfr client-add <name>`, `pfr import --client <name> <backup> [--label]`, `pfr grids --client <name>`, `pfr show --client <name> --grid <name> [--json]`. The master password is prompted without echo, or taken from `PFR_MASTER_PASSWORD`.
+
+### 9.5 Later
+- Compare snapshots ("what changed since last time").
+- Findings tracked with status (open / accepted / remediated) — with Reports (§12).
+- Network tool results saved per client.
+- Change master password; idle auto-lock.
 
 ---
 
@@ -201,7 +220,9 @@ _(To be completed with the decisions in §14 before implementation.)_
 
 ---
 
-## 12. Module 4 — Health check / audit
+## 12. Module 4 — Reports
+
+Renamed from "Health check". Will hold **predefined reports** (health checks, CNAME resolution, licenses, …) and a **data explorer** for the stored grid data. [PENDING] design — see §14.
 
 ### 12.1 Engine
 - Rules with severity levels, defined in YAML/JSON files loaded at runtime.
@@ -253,6 +274,7 @@ _(To be completed with the decisions in §14 before implementation.)_
 | 7 | SNMP versions in use (v3 only, or v2c too) | §11 |
 | 8 | Default resolver for live CNAME checks | §12.5 |
 | 9 | Report branding (logo, company name) | §5 |
-| 10 | Client workspace storage, encryption and structure | §9.1 |
 
-Resolved since v0.1: sample backup provided (lab grid, NIOS 9.0.8).
+| 10 | Reports: which predefined reports first; what "explore the database" should allow | §12 |
+
+Resolved: sample backup provided (lab grid, NIOS 9.0.8); client workspace storage (next to the app), encryption (master password) and snapshots (parsed inventory only).

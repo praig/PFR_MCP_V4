@@ -8,7 +8,7 @@ Designed to run on **air-gapped** machines as self-contained executables with no
 
 See **[REQUIREMENTS.md](REQUIREMENTS.md)** for the full specification and open decisions.
 
-> Status: early development. The NIOS backup parser, `pfr inspect`, and the GUI's Inventory module work.
+> Status: early development. Inventory and encrypted client workspaces (clients → grids → snapshots) work in the GUI and CLI.
 
 ## Quick start
 
@@ -22,6 +22,23 @@ dotnet run --project src/Pfr.Gui -- path/to/grid-backup.bak
 The Inventory module shows an overview plus searchable, sortable tables of members, DNS views,
 zones, networks, DHCP ranges, DHCP failover and DNS records. Search matches every word you type
 across all columns; rows can be multi-selected and copied (Ctrl+C) with headers.
+
+### Client data
+
+Client workspaces (contacts, notes, engagement log, and each client's grids with dated snapshots)
+are kept **encrypted** in a `PfrData` folder next to the application, unlocked with a master
+password. Snapshots store the parsed inventory only (no secrets), so switching between clients and
+grids is instant and never needs the original backup. Backups without a grid name are refused.
+
+```bash
+pfr init                                            # create the encrypted data folder
+pfr client-add "Acme Corp"
+pfr import --client "Acme Corp" grid-backup.bak --label "Q4 review"
+pfr clients                                         # clients and their grids
+pfr show --client "Acme Corp" --grid "Production"   # latest snapshot, no backup needed
+```
+
+Set `PFR_MASTER_PASSWORD` for scripted use, and `PFR_DATA_DIR` (or `--data`) to use another folder.
 
 Summarize a grid backup from the command line:
 

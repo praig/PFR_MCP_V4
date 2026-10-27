@@ -11,15 +11,27 @@
     <x:Double x:Key="TabItemHeaderFontSize">16</x:Double>
   </Window.Resources>
   <DockPanel>
-    <!-- Header -->
+    <!-- Header: product, client/grid switcher, what's loaded, open a backup -->
     <Border DockPanel.Dock="Top" Padding="16,10"
             Background="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}">
-      <Grid ColumnDefinitions="Auto,*,Auto">
+      <Grid ColumnDefinitions="Auto,Auto,*,Auto">
         <TextBlock x:Name="BannerText" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" />
-        <TextBlock x:Name="LoadedText" Grid.Column="1" Margin="24,0" VerticalAlignment="Center"
+        <ComboBox x:Name="GridPicker" Grid.Column="1" Margin="20,0,0,0" Width="320"
+                  PlaceholderText="Switch client › grid" VerticalAlignment="Center" />
+        <TextBlock x:Name="LoadedText" Grid.Column="2" Margin="20,0" VerticalAlignment="Center"
                    Opacity="0.75" TextTrimming="CharacterEllipsis" />
-        <Button x:Name="OpenButton" Grid.Column="2" Content="Open backup…" Classes="accent" />
+        <Button x:Name="OpenButton" Grid.Column="3" Content="Open backup…" Classes="accent" />
       </Grid>
+    </Border>
+
+    <!-- Shown when a backup was opened but isn't saved to a client yet -->
+    <Border x:Name="SaveBar" DockPanel.Dock="Top" Padding="16,8" IsVisible="False" Background="#2A2C30">
+      <StackPanel Orientation="Horizontal" Spacing="10">
+        <TextBlock x:Name="SaveBarText" VerticalAlignment="Center"
+                   Text="This grid isn't saved to a client yet." />
+        <ComboBox x:Name="SaveClientPicker" Width="260" PlaceholderText="Choose a client" VerticalAlignment="Center" />
+        <Button x:Name="SaveToClientButton" Content="Save to client" Classes="accent" />
+      </StackPanel>
     </Border>
 
     <!-- Status bar -->

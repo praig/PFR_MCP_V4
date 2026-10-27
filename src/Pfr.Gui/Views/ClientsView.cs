@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Templates;
 using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
@@ -18,7 +19,10 @@ public interface IInventoryHost
 {
     GridInventory? LoadedInventory { get; }
     LoadedSource? LoadedSource { get; }
-    void ShowSnapshot(Client client, SnapshotInfo snapshot, GridInventory inventory);
+
+    /// <summary>Shows a stored snapshot in Inventory (optionally switching to the Inventory tab).</summary>
+    void ShowSnapshot(Client client, ClientGrid grid, SnapshotInfo snapshot, GridInventory inventory, bool switchToInventory);
+
     void SetStatus(string text);
 }
 
@@ -47,12 +51,15 @@ public sealed class ClientsView : UserControl
     public ClientWorkspace? Workspace => _workspace;
 
     public IReadOnlyList<Client> Clients =>
-        (_clientList?.ItemsSource as IEnumerable<ClientItem>)?.Select(i => i.Client).ToList() ?? [];
+        (_clientList?.ItemsSource as IEnumerable<object>)?.OfType<ClientItem>().Select(i => i.Client).ToList() ?? [];
 
     public ClientDetailView? CurrentDetail => _detail?.Content as ClientDetailView;
 
     /// <summary>Raised after unlocking, locking or creating the store.</summary>
     public event EventHandler? StateChanged;
+
+    /// <summary>Raised when clients or grids are added, renamed or removed.</summary>
+    public event EventHandler? DataChanged;
 
     public void ShowForState()
     {
@@ -95,8 +102,8 @@ public sealed class ClientsView : UserControl
                 await Task.Run(() => _store.Initialize(password, _iterations));
                 first.Text = second.Text = "";
                 _host.SetStatus("Client store created and unlocked.");
+                ShowClients(); // creates the workspace, so listeners see it
                 StateChanged?.Invoke(this, EventArgs.Empty);
-                ShowClients();
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException
                                            or InvalidOperationException)
@@ -172,8 +179,8 @@ public sealed class ClientsView : UserControl
                 return;
             }
 
+            ShowClients(); // creates the workspace, so listeners see it
             StateChanged?.Invoke(this, EventArgs.Empty);
-            ShowClients();
         }
 
         unlock.Click += (_, _) => Submit();
@@ -194,8 +201,8 @@ public sealed class ClientsView : UserControl
     public bool TryUnlock(string password)
     {
         if (!_store.Unlock(password)) return false;
+        ShowClients(); // creates the workspace, so listeners see it
         StateChanged?.Invoke(this, EventArgs.Empty);
-        ShowClients();
         return true;
     }
 
@@ -215,10 +222,25 @@ public sealed class ClientsView : UserControl
     {
         _workspace = new ClientWorkspace(_store);
 
-        _clientList = new ListBox { Background = Brushes.Transparent };
-        _clientList.SelectionChanged += (_, _) =>
+        // Clients with their grids beneath them. Clicking a grid opens its latest snapshot.
+        _clientList = new ListBox
         {
-            if (_clientList.SelectedItem is ClientItem item) OpenClient(item.Client.Id);
+            Background = Brushes.Transparent,
+            ItemTemplate = new FuncDataTemplate<object>((item, _) => ListRow(item), supportsRecycling: false),
+        };
+        _clientList.SelectionChanged += async (_, _) =>
+        {
+            if (_suppressSelection) return;
+            switch (_clientList.SelectedItem)
+            {
+                case ClientItem c:
+                    OpenClient(c.Client.Id);
+                    break;
+                case GridItem g:
+                    OpenClient(g.Client.Id);
+                    await OpenGridAsync(g.Client.Id, g.Grid.Id);
+                    break;
+            }
         };
 
         _detail = new ContentControl();
@@ -278,18 +300,31 @@ public sealed class ClientsView : UserControl
     {
         if (_workspace is null || _clientList is null) return;
         var problems = new List<string>();
-        var items = _workspace.ListClients(problems).Select(c => new ClientItem(c)).ToList();
-        selectId ??= (CurrentDetail?.Client.Id);
+        var clients = _workspace.ListClients(problems);
+        var items = new List<object>();
+        foreach (var c in clients)
+        {
+            items.Add(new ClientItem(c));
+            items.AddRange(c.Grids.OrderBy(g => g.Name, StringComparer.OrdinalIgnoreCase).Select(g => new GridItem(c, g)));
+        }
+
+        selectId ??= CurrentDetail?.Client.Id;
         _clientList.ItemsSource = items;
         if (problems.Count > 0) _host.SetStatus(string.Join(" ", problems));
+        DataChanged?.Invoke(this, EventArgs.Empty);
 
-        var selected = items.FirstOrDefault(i => i.Client.Id == selectId);
+        var selected = items.OfType<ClientItem>().FirstOrDefault(i => i.Client.Id == selectId);
         if (selected is not null)
         {
             _clientList.SelectedItem = selected;
+            if (CurrentDetail?.Client.Id == selected.Client.Id)
+            {
+                // Same client: keep its page (and open tab), just with fresh data.
+                _detail!.Content = null;
+            }
             OpenClient(selected.Client.Id);
         }
-        else if (items.Count == 0)
+        else if (clients.Count == 0)
         {
             _detail!.Content = Centered(
                 Ui.Heading("No clients yet"),
@@ -302,10 +337,53 @@ public sealed class ClientsView : UserControl
         }
     }
 
+    /// <summary>Rebuilds the client/grid list without replacing the open client page.</summary>
+    private void RefreshList()
+    {
+        if (_workspace is null || _clientList is null) return;
+        var keep = CurrentDetail?.Client.Id;
+        var items = new List<object>();
+        foreach (var c in _workspace.ListClients())
+        {
+            items.Add(new ClientItem(c));
+            items.AddRange(c.Grids.OrderBy(g => g.Name, StringComparer.OrdinalIgnoreCase).Select(g => new GridItem(c, g)));
+        }
+        _suppressSelection = true;
+        _clientList.ItemsSource = items;
+        _clientList.SelectedItem = items.OfType<ClientItem>().FirstOrDefault(i => i.Client.Id == keep);
+        _suppressSelection = false;
+        DataChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private bool _suppressSelection;
+
     public void SelectClient(string id)
     {
-        var items = _clientList?.ItemsSource as IEnumerable<ClientItem>;
-        if (items?.FirstOrDefault(i => i.Client.Id == id) is { } item) _clientList!.SelectedItem = item;
+        var items = _clientList?.ItemsSource as IEnumerable<object>;
+        if (items?.OfType<ClientItem>().FirstOrDefault(i => i.Client.Id == id) is { } item) _clientList!.SelectedItem = item;
+    }
+
+    /// <summary>Opens a grid's newest snapshot in Inventory: no backup needed.</summary>
+    public async Task OpenGridAsync(string clientId, string gridId, bool switchToInventory = true)
+    {
+        if (_workspace is null) return;
+        try
+        {
+            var client = _workspace.GetClient(clientId);
+            if (client.FindGrid(gridId) is not { } grid) return;
+            var latest = await Task.Run(() => _workspace.LoadLatest(clientId, gridId));
+            if (latest is null)
+            {
+                _host.SetStatus($"{client.Name} › {grid.Name} has no snapshots yet.");
+                return;
+            }
+            _host.ShowSnapshot(client, grid, latest.Value.Snapshot, latest.Value.Inventory, switchToInventory);
+        }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or System.Text.Json.JsonException
+                                       or System.Security.Cryptography.CryptographicException)
+        {
+            _host.SetStatus($"Could not open the grid: {ex.Message}");
+        }
     }
 
     private void OpenClient(string id)
@@ -313,7 +391,7 @@ public sealed class ClientsView : UserControl
         if (_workspace is null || _detail is null) return;
         if (CurrentDetail?.Client.Id == id) return;
         var detail = new ClientDetailView(_workspace, _workspace.GetClient(id), _host);
-        detail.ClientChanged += (_, changedId) => RefreshClients(changedId);
+        detail.ClientChanged += (_, _) => RefreshList();
         detail.ClientDeleted += (_, _) => RefreshClients();
         _detail.Content = detail;
     }
@@ -333,15 +411,47 @@ public sealed class ClientsView : UserControl
         };
     }
 
-    private sealed record ClientItem(Client Client)
+    private static Control ListRow(object? item) => item switch
     {
-        public override string ToString()
+        ClientItem c => new StackPanel
         {
-            var latest = Client.LatestSnapshot;
-            var detail = latest is null
-                ? "no snapshots"
-                : $"{Client.Snapshots.Count} snapshot{(Client.Snapshots.Count == 1 ? "" : "s")} · latest {latest.ImportedUtc.ToLocalTime():yyyy-MM-dd}";
-            return $"{Client.Name}\n{detail}";
-        }
-    }
+            Margin = new Thickness(0, 6, 0, 2),
+            Children =
+            {
+                new TextBlock { Text = c.Client.Name, FontWeight = FontWeight.SemiBold, FontSize = 15 },
+                new TextBlock
+                {
+                    Text = c.Client.Grids.Count switch
+                    {
+                        0 => "no grids yet",
+                        1 => "1 grid",
+                        var n => $"{n} grids",
+                    },
+                    Opacity = 0.6,
+                    FontSize = 12,
+                },
+            },
+        },
+        GridItem g => new StackPanel
+        {
+            Margin = new Thickness(18, 2, 0, 2),
+            Children =
+            {
+                new TextBlock { Text = "▸ " + g.Grid.Name },
+                new TextBlock
+                {
+                    Text = g.Grid.LatestSnapshot is { } s
+                        ? $"   latest {s.ImportedUtc.ToLocalTime():yyyy-MM-dd} · NIOS {(s.NiosVersion ?? "?").Split('-')[0]}"
+                        : "   no snapshots",
+                    Opacity = 0.55,
+                    FontSize = 12,
+                },
+            },
+        },
+        _ => new TextBlock(),
+    };
+
+    private sealed record ClientItem(Client Client);
+
+    private sealed record GridItem(Client Client, ClientGrid Grid);
 }

@@ -94,3 +94,11 @@ public sealed class LogEntry
     /// <summary>Optional link to a snapshot taken during this work.</summary>
     public string? SnapshotId { get; set; }
 }
+
+/// <summary>Remembered between sessions (stored encrypted): which grid was open last.</summary>
+public sealed class WorkspaceSettings
+{
+    public string? LastClientId { get; set; }
+    public string? LastGridId { get; set; }
+    public string? LastSnapshotId { get; set; }
+}

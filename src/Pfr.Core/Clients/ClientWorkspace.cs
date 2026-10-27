@@ -20,6 +20,7 @@ namespace Pfr.Core.Clients;
 public sealed class ClientWorkspace(SecureStore store)
 {
     private const string ClientsFolder = "clients";
+    private const string SettingsFile = "settings.pfr";
 
     public SecureStore Store { get; } = store;
 
@@ -108,13 +109,12 @@ public sealed class ClientWorkspace(SecureStore store)
     /// The grid a new backup belongs to: the one with the same grid name if there is
     /// one, otherwise a new grid named after it.
     /// </summary>
-    private static ClientGrid MatchOrCreateGrid(Client client, GridInventory inventory, string fallbackName)
+    private static ClientGrid MatchOrCreateGrid(Client client, GridInventory inventory)
     {
-        var name = string.IsNullOrWhiteSpace(inventory.GridName) ? fallbackName : inventory.GridName!;
-        var gridName = inventory.GridName;
+        // The grid name is required (see BackupParser.EnsureGridName), so it always identifies the grid.
+        var name = inventory.GridName!.Trim();
         var match = client.Grids.FirstOrDefault(g =>
-            (gridName is not null && g.Snapshots.Any(s =>
-                string.Equals(s.GridName, gridName, StringComparison.OrdinalIgnoreCase)))
+            g.Snapshots.Any(s => string.Equals(s.GridName?.Trim(), name, StringComparison.OrdinalIgnoreCase))
             || string.Equals(g.Name, name, StringComparison.OrdinalIgnoreCase));
         if (match is not null) return match;
 
@@ -149,12 +149,14 @@ public sealed class ClientWorkspace(SecureStore store)
     }
 
     /// <summary>Stores an already-parsed inventory as a new snapshot (grid chosen as for <see cref="ImportBackup"/>).</summary>
+    /// <exception cref="InvalidDataException">The inventory has no grid name; nothing is stored.</exception>
     public (ClientGrid Grid, SnapshotInfo Snapshot) AddSnapshot(string clientId, GridInventory inventory,
         string sourceFileName, long sourceBytes, string sourceSha256, string? gridId = null, string label = "")
     {
+        BackupParser.EnsureGridName(inventory, sourceFileName);
         var client = GetClient(clientId);
         var grid = gridId is null
-            ? MatchOrCreateGrid(client, inventory, Path.GetFileNameWithoutExtension(sourceFileName))
+            ? MatchOrCreateGrid(client, inventory)
             : client.FindGrid(gridId) ?? throw new ArgumentException("That grid no longer exists.");
 
         var info = new SnapshotInfo
@@ -200,6 +202,34 @@ public sealed class ClientWorkspace(SecureStore store)
         client.FindGrid(gridId)?.Snapshots.RemoveAll(s => s.Id == snapshotId);
         SaveClient(client);
         Store.Delete(SnapshotFile(clientId, gridId, snapshotId));
+    }
+
+    // ---- Last viewed -------------------------------------------------------
+
+    public WorkspaceSettings GetSettings() =>
+        Store.Exists(SettingsFile) ? Store.ReadJson<WorkspaceSettings>(SettingsFile) : new WorkspaceSettings();
+
+    /// <summary>Remembers the snapshot being viewed so it reopens after the next unlock.</summary>
+    public void RememberLastViewed(string clientId, string gridId, string snapshotId) =>
+        Store.WriteJson(SettingsFile, new WorkspaceSettings
+        {
+            LastClientId = clientId, LastGridId = gridId, LastSnapshotId = snapshotId,
+        });
+
+    /// <summary>The last viewed client, grid and snapshot, if they all still exist.</summary>
+    public (Client Client, ClientGrid Grid, SnapshotInfo Snapshot)? LastViewed()
+    {
+        var s = GetSettings();
+        if (s.LastClientId is not { } clientId || s.LastGridId is not { } gridId || s.LastSnapshotId is not { } snapshotId
+            || !Store.Exists(ClientFile(clientId)))
+        {
+            return null;
+        }
+
+        var client = GetClient(clientId);
+        var grid = client.FindGrid(gridId);
+        var snapshot = grid?.Snapshots.FirstOrDefault(x => x.Id == snapshotId);
+        return grid is not null && snapshot is not null ? (client, grid, snapshot) : null;
     }
 
     /// <summary>An existing snapshot of the same file (same SHA-256), if any, and its grid.</summary>

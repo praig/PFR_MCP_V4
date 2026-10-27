@@ -11,7 +11,7 @@ using Pfr.Gui.Controls;
 
 namespace Pfr.Gui.Views;
 
-/// <summary>One client: details and contacts, snapshots, and the engagement log.</summary>
+/// <summary>One client: details and contacts, its grids and their snapshots, and the engagement log.</summary>
 public sealed class ClientDetailView : UserControl
 {
     private static readonly FilePickerFileType BackupFiles = new("NIOS grid backup")
@@ -23,8 +23,10 @@ public sealed class ClientDetailView : UserControl
     private readonly IInventoryHost _host;
     private readonly TabControl _tabs;
 
+    private ListBox _gridList = null!;
     private ListBox _snapshotList = null!;
-    private TextBlock _snapshotMessage = null!;
+    private TextBox _gridName = null!;
+    private TextBlock _gridMessage = null!;
     private ListBox _logList = null!;
 
     public ClientDetailView(ClientWorkspace workspace, Client client, IInventoryHost host)
@@ -38,7 +40,7 @@ public sealed class ClientDetailView : UserControl
             Items =
             {
                 new TabItem { Header = "Details", Content = BuildDetails() },
-                new TabItem { Header = "Snapshots", Content = BuildSnapshots() },
+                new TabItem { Header = "Grids", Content = BuildGrids() },
                 new TabItem { Header = "Engagement log", Content = BuildLog() },
             },
         };
@@ -52,7 +54,12 @@ public sealed class ClientDetailView : UserControl
 
     public event EventHandler? ClientDeleted;
 
-    public IReadOnlyList<SnapshotInfo> Snapshots => Client.Snapshots;
+    public IReadOnlyList<ClientGrid> Grids => Client.Grids;
+
+    /// <summary>Snapshots of every grid.</summary>
+    public IReadOnlyList<SnapshotInfo> Snapshots => Client.AllSnapshots.ToList();
+
+    public ClientGrid? SelectedGrid => (_gridList.SelectedItem as GridItem)?.Grid;
 
     public void SelectTab(int index) => _tabs.SelectedIndex = index;
 
@@ -234,16 +241,21 @@ public sealed class ClientDetailView : UserControl
         };
     }
 
-    // ---- Snapshots ---------------------------------------------------------
+    // ---- Grids and snapshots ------------------------------------------------
 
-    private Control BuildSnapshots()
+    private Control BuildGrids()
     {
+        _gridList = new ListBox
+        {
+            Background = Brushes.Transparent,
+            ItemTemplate = new FuncDataTemplate<GridItem>((g, _) => GridRow(g), supportsRecycling: false),
+        };
         _snapshotList = new ListBox
         {
             Background = Brushes.Transparent,
             ItemTemplate = new FuncDataTemplate<SnapshotInfo>((s, _) => SnapshotRow(s), supportsRecycling: false),
         };
-        _snapshotMessage = Ui.Message();
+        _gridMessage = Ui.Message();
         var label = new TextBox
         {
             Watermark = "Label for the next snapshot (optional), e.g. \"Q4 health check\"",
@@ -251,6 +263,7 @@ public sealed class ClientDetailView : UserControl
             HorizontalAlignment = HorizontalAlignment.Left,
         };
 
+        // Import: the backup goes to the grid with the same grid name, or a new grid.
         var import = Ui.Accent("Import backup…");
         import.Click += async (_, _) =>
         {
@@ -276,35 +289,155 @@ public sealed class ClientDetailView : UserControl
             label.Text = "";
         };
 
-        var open = new Button { Content = "Open in Inventory" };
-        open.Click += async (_, _) => await OpenSelectedAsync();
-        _snapshotList.DoubleTapped += async (_, _) => await OpenSelectedAsync();
-
-        var delete = Ui.Confirming("Delete selected", () =>
+        // Grid actions.
+        _gridList.SelectionChanged += (_, _) =>
         {
-            if (_snapshotList.SelectedItem is not SnapshotInfo s) return;
-            _workspace.DeleteSnapshot(Client.Id, s.Id);
+            var grid = SelectedGrid;
+            _snapshotList.ItemsSource = grid?.Snapshots.OrderByDescending(s => s.ImportedUtc).ToList();
+            _gridName.Text = grid?.Name ?? "";
+        };
+        _gridList.DoubleTapped += async (_, _) =>
+        {
+            if (SelectedGrid is { } g) await OpenLatestAsync(g.Id);
+        };
+
+        var openLatest = Ui.Accent("Open latest");
+        openLatest.Click += async (_, _) =>
+        {
+            if (SelectedGrid is { } g) await OpenLatestAsync(g.Id);
+            else Ui.ShowError(_gridMessage, "Select a grid.");
+        };
+
+        _gridName = new TextBox { Watermark = "Grid display name", Width = 220 };
+        var rename = new Button { Content = "Rename" };
+        rename.Click += (_, _) =>
+        {
+            if (SelectedGrid is not { } g)
+            {
+                Ui.ShowError(_gridMessage, "Select a grid to rename.");
+                return;
+            }
+            try
+            {
+                Client.FindGrid(g.Id)!.Name = _gridName.Text ?? "";
+                _workspace.SaveClient(Client);
+                Reload(g.Id);
+                Ui.ShowInfo(_gridMessage, "Grid renamed. New backups of it still go to this grid.");
+            }
+            catch (ArgumentException ex)
+            {
+                Client = _workspace.GetClient(Client.Id);
+                Ui.ShowError(_gridMessage, ex.Message);
+            }
+        };
+
+        var deleteGrid = Ui.Confirming("Delete grid", () =>
+        {
+            if (SelectedGrid is not { } g) return;
+            _workspace.DeleteGrid(Client.Id, g.Id);
             Reload();
-            Ui.ShowInfo(_snapshotMessage, "Snapshot deleted.");
+            Ui.ShowInfo(_gridMessage, $"Deleted grid {g.Name} and its snapshots.");
+        }, "Click again to delete grid and all its snapshots");
+
+        // Snapshot actions.
+        var openSnapshot = new Button { Content = "Open snapshot" };
+        openSnapshot.Click += async (_, _) => await OpenSelectedSnapshotAsync();
+        _snapshotList.DoubleTapped += async (_, _) => await OpenSelectedSnapshotAsync();
+
+        var deleteSnapshot = Ui.Confirming("Delete snapshot", () =>
+        {
+            if (SelectedGrid is not { } g || _snapshotList.SelectedItem is not SnapshotInfo s) return;
+            _workspace.DeleteSnapshot(Client.Id, g.Id, s.Id);
+            Reload(g.Id);
+            Ui.ShowInfo(_gridMessage, "Snapshot deleted.");
         });
+
+        var gridsPane = new DockPanel
+        {
+            Children =
+            {
+                Docked(new StackPanel
+                {
+                    Spacing = 6,
+                    Margin = new Thickness(0, 0, 0, 6),
+                    Children =
+                    {
+                        Ui.Heading("Grids", 16),
+                        Ui.Row(openLatest, deleteGrid),
+                        Ui.Row(_gridName, rename),
+                    },
+                }, Dock.Top),
+                _gridList,
+            },
+        };
+        var snapshotsPane = new DockPanel
+        {
+            Children =
+            {
+                Docked(new StackPanel
+                {
+                    Spacing = 6,
+                    Margin = new Thickness(0, 0, 0, 6),
+                    Children = { Ui.Heading("Snapshots of the selected grid", 16), Ui.Row(openSnapshot, deleteSnapshot) },
+                }, Dock.Top),
+                _snapshotList,
+            },
+        };
+
+        var split = new Grid { ColumnDefinitions = new ColumnDefinitions("360,16,*") };
+        split.Children.Add(gridsPane);
+        Grid.SetColumn(snapshotsPane, 2);
+        split.Children.Add(snapshotsPane);
 
         var top = new StackPanel
         {
             Spacing = 8,
-            Margin = new Thickness(4, 12, 4, 8),
+            Margin = new Thickness(4, 12, 4, 12),
             Children =
             {
-                Ui.Muted("Each snapshot keeps the parsed inventory of a grid backup (no passwords, keys or other " +
-                         "secrets) plus the original file's name, size and SHA-256."),
+                Ui.Muted("A client can have several grids. Each import is stored as a snapshot of its grid (matched by " +
+                         "grid name), keeping the parsed inventory only: no passwords, keys or other secrets. " +
+                         "Opening a grid shows its latest snapshot instantly; the backup isn't needed again."),
                 label,
                 Ui.Row(import, addCurrent),
-                Ui.Row(open, delete),
-                _snapshotMessage,
+                _gridMessage,
             },
         };
         DockPanel.SetDock(top, Dock.Top);
-        ReloadSnapshots();
-        return new DockPanel { Children = { top, _snapshotList } };
+        ReloadGrids();
+        return new DockPanel { Children = { top, split } };
+    }
+
+    private static Control Docked(Control control, Dock dock)
+    {
+        DockPanel.SetDock(control, dock);
+        return control;
+    }
+
+    private static Control GridRow(GridItem? item)
+    {
+        if (item is null) return new TextBlock();
+        var g = item.Grid;
+        var latest = g.LatestSnapshot;
+        var foundAs = latest?.GridName is { } n && !string.Equals(n, g.Name, StringComparison.OrdinalIgnoreCase)
+            ? $" · grid name \"{n}\""
+            : "";
+        return new StackPanel
+        {
+            Margin = new Thickness(0, 4),
+            Children =
+            {
+                new TextBlock { Text = g.Name, FontWeight = FontWeight.SemiBold },
+                new TextBlock
+                {
+                    Text = latest is null
+                        ? "no snapshots"
+                        : $"{g.Snapshots.Count} snapshot{(g.Snapshots.Count == 1 ? "" : "s")} · latest {latest.ImportedUtc.ToLocalTime():yyyy-MM-dd} · NIOS {(latest.NiosVersion ?? "?").Split('-')[0]}{foundAs}",
+                    Opacity = 0.7,
+                    TextWrapping = TextWrapping.Wrap,
+                },
+            },
+        };
     }
 
     private static Control SnapshotRow(SnapshotInfo? s)
@@ -323,16 +456,17 @@ public sealed class ClientDetailView : UserControl
                 },
                 new TextBlock
                 {
-                    Text = $"{s.GridName ?? "Grid"} · NIOS {(s.NiosVersion ?? "?").Split('-')[0]} · " +
-                           $"{s.Members} members · {s.Zones} zones · {s.Networks} networks · " +
-                           $"{s.DhcpRanges} DHCP ranges · {s.Records} records",
+                    Text = $"NIOS {(s.NiosVersion ?? "?").Split('-')[0]} · {s.Members} members · {s.Zones} zones · " +
+                           $"{s.Networks} networks · {s.DhcpRanges} DHCP ranges · {s.Records} records",
                     Opacity = 0.75,
+                    TextWrapping = TextWrapping.Wrap,
                 },
                 new TextBlock
                 {
                     Text = $"{s.SourceFileName} · {s.SourceBytes / 1024.0 / 1024.0:0.0} MB · SHA-256 {Short(s.SourceSha256)}",
                     Opacity = 0.55,
                     FontSize = 12,
+                    TextTrimming = TextTrimming.CharacterEllipsis,
                 },
             },
         };
@@ -340,39 +474,43 @@ public sealed class ClientDetailView : UserControl
 
     private static string Short(string sha) => sha.Length > 16 ? sha[..16] + "…" : sha;
 
-    private void ReloadSnapshots()
+    private void ReloadGrids(string? selectGridId = null)
     {
-        _snapshotList.ItemsSource = Client.Snapshots.OrderByDescending(s => s.ImportedUtc).ToList();
+        var items = Client.Grids.OrderBy(g => g.Name, StringComparer.OrdinalIgnoreCase).Select(g => new GridItem(g)).ToList();
+        selectGridId ??= SelectedGrid?.Id ?? items.FirstOrDefault()?.Grid.Id;
+        _gridList.ItemsSource = items;
+        _gridList.SelectedItem = items.FirstOrDefault(i => i.Grid.Id == selectGridId);
+        if (_gridList.SelectedItem is null) _snapshotList.ItemsSource = null;
     }
 
-    private void Reload()
+    private void Reload(string? selectGridId = null)
     {
         Client = _workspace.GetClient(Client.Id);
-        ReloadSnapshots();
+        ReloadGrids(selectGridId);
         ClientChanged?.Invoke(this, Client.Id);
     }
 
-    /// <summary>Parses and stores a backup as a new snapshot (off the UI thread).</summary>
+    /// <summary>Parses and stores a backup as a snapshot of its grid (off the UI thread).</summary>
     public async Task ImportAsync(string path, string label = "")
     {
         var name = Path.GetFileName(path);
-        Ui.ShowInfo(_snapshotMessage, $"Reading {name}…");
+        Ui.ShowInfo(_gridMessage, $"Reading {name}…");
         try
         {
             var sha = await Task.Run(() => ClientWorkspace.Sha256Of(path));
             var duplicate = _workspace.FindDuplicate(Client.Id, sha);
-            var info = await Task.Run(() => _workspace.ImportBackup(Client.Id, path, label));
-            Reload();
-            _snapshotList.SelectedItem = Client.Snapshots.FirstOrDefault(s => s.Id == info.Id);
-            Ui.ShowInfo(_snapshotMessage, duplicate is null
-                ? $"Imported {name}."
-                : $"Imported {name}. Note: the same file was already imported on {duplicate.ImportedUtc.ToLocalTime():yyyy-MM-dd}.");
-            _host.SetStatus($"Saved snapshot of {info.GridName ?? name} to {Client.Name}.");
+            var (grid, info) = await Task.Run(() => _workspace.ImportBackup(Client.Id, path, label: label));
+            Reload(grid.Id);
+            _snapshotList.SelectedItem = (_snapshotList.ItemsSource as IEnumerable<SnapshotInfo>)?.FirstOrDefault(s => s.Id == info.Id);
+            Ui.ShowInfo(_gridMessage, duplicate is null
+                ? $"Imported {name} into grid {grid.Name}."
+                : $"Imported {name} into grid {grid.Name}. Note: the same file was already imported on {duplicate.Value.Snapshot.ImportedUtc.ToLocalTime():yyyy-MM-dd}.");
+            _host.SetStatus($"Saved snapshot of {grid.Name} to {Client.Name}.");
         }
         catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException
-                                       or System.Xml.XmlException)
+                                       or System.Xml.XmlException or ArgumentException)
         {
-            Ui.ShowError(_snapshotMessage, $"Could not import {name}: {ex.Message}");
+            Ui.ShowError(_gridMessage, $"Could not import {name}: {ex.Message}");
         }
     }
 
@@ -381,42 +519,62 @@ public sealed class ClientDetailView : UserControl
     {
         if (_host.LoadedInventory is not { } inventory || _host.LoadedSource is not { } source)
         {
-            Ui.ShowError(_snapshotMessage, "No grid is open in Inventory. Open a backup there first, or use Import backup.");
+            Ui.ShowError(_gridMessage, "No grid is open in Inventory. Open a backup there first, or use Import backup.");
             return;
         }
-        var duplicate = _workspace.FindDuplicate(Client.Id, source.Sha256);
-        var info = _workspace.AddSnapshot(Client.Id, inventory, source.FileName, source.Bytes, source.Sha256, label);
-        Reload();
-        _snapshotList.SelectedItem = Client.Snapshots.FirstOrDefault(s => s.Id == info.Id);
-        Ui.ShowInfo(_snapshotMessage, duplicate is null
-            ? $"Saved {source.FileName} as a snapshot."
-            : $"Saved {source.FileName}. Note: the same file was already saved on {duplicate.ImportedUtc.ToLocalTime():yyyy-MM-dd}.");
-    }
-
-    public async Task OpenSelectedAsync()
-    {
-        if (_snapshotList.SelectedItem is not SnapshotInfo s)
-        {
-            Ui.ShowError(_snapshotMessage, "Select a snapshot to open.");
-            return;
-        }
-        await OpenSnapshotAsync(s.Id);
-    }
-
-    public async Task OpenSnapshotAsync(string snapshotId)
-    {
-        var s = Client.Snapshots.First(x => x.Id == snapshotId);
         try
         {
-            var inventory = await Task.Run(() => _workspace.LoadSnapshot(Client.Id, s.Id));
-            _host.ShowSnapshot(Client, s, inventory);
+            var duplicate = _workspace.FindDuplicate(Client.Id, source.Sha256);
+            var (grid, info) = _workspace.AddSnapshot(Client.Id, inventory, source.FileName, source.Bytes, source.Sha256, label: label);
+            Reload(grid.Id);
+            _host.ShowSnapshot(Client, grid, info, inventory, switchToInventory: false);
+            Ui.ShowInfo(_gridMessage, duplicate is null
+                ? $"Saved {source.FileName} to grid {grid.Name}."
+                : $"Saved {source.FileName} to grid {grid.Name}. Note: the same file was already saved on {duplicate.Value.Snapshot.ImportedUtc.ToLocalTime():yyyy-MM-dd}.");
+        }
+        catch (Exception ex) when (ex is InvalidDataException or ArgumentException)
+        {
+            Ui.ShowError(_gridMessage, ex.Message);
+        }
+    }
+
+    private async Task OpenSelectedSnapshotAsync()
+    {
+        if (SelectedGrid is not { } g || _snapshotList.SelectedItem is not SnapshotInfo s)
+        {
+            Ui.ShowError(_gridMessage, "Select a snapshot to open.");
+            return;
+        }
+        await OpenSnapshotAsync(g.Id, s.Id);
+    }
+
+    /// <summary>Opens a grid's newest snapshot in Inventory.</summary>
+    public async Task OpenLatestAsync(string gridId)
+    {
+        if (Client.FindGrid(gridId)?.LatestSnapshot is { } latest) await OpenSnapshotAsync(gridId, latest.Id);
+        else Ui.ShowError(_gridMessage, "That grid has no snapshots yet.");
+    }
+
+    public async Task OpenSnapshotAsync(string gridId, string snapshotId)
+    {
+        if (Client.FindGrid(gridId) is not { } grid || grid.Snapshots.FirstOrDefault(x => x.Id == snapshotId) is not { } s)
+        {
+            Ui.ShowError(_gridMessage, "That snapshot no longer exists.");
+            return;
+        }
+        try
+        {
+            var inventory = await Task.Run(() => _workspace.LoadSnapshot(Client.Id, grid.Id, s.Id));
+            _host.ShowSnapshot(Client, grid, s, inventory, switchToInventory: true);
         }
         catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException
                                        or System.Security.Cryptography.CryptographicException)
         {
-            Ui.ShowError(_snapshotMessage, $"Could not open the snapshot: {ex.Message}");
+            Ui.ShowError(_gridMessage, $"Could not open the snapshot: {ex.Message}");
         }
     }
+
+    private sealed record GridItem(ClientGrid Grid);
 
     // ---- Engagement log ----------------------------------------------------
 
@@ -437,8 +595,12 @@ public sealed class ClientDetailView : UserControl
         void LoadSnapshotChoices()
         {
             var choices = new List<SnapshotChoice> { new(null, "(no snapshot)") };
-            choices.AddRange(Client.Snapshots.OrderByDescending(s => s.ImportedUtc).Select(s =>
-                new SnapshotChoice(s.Id, $"{s.ImportedUtc.ToLocalTime():yyyy-MM-dd HH:mm}  {(s.Label.Length > 0 ? s.Label : s.SourceFileName)}")));
+            choices.AddRange(Client.Grids
+                .SelectMany(g => g.Snapshots.Select(s => (Grid: g, Snapshot: s)))
+                .OrderByDescending(x => x.Snapshot.ImportedUtc)
+                .Select(x => new SnapshotChoice(x.Snapshot.Id,
+                    $"{x.Snapshot.ImportedUtc.ToLocalTime():yyyy-MM-dd HH:mm}  {x.Grid.Name}" +
+                    (x.Snapshot.Label.Length > 0 ? $" · {x.Snapshot.Label}" : ""))));
             snapshot.ItemsSource = choices;
         }
 
@@ -525,8 +687,8 @@ public sealed class ClientDetailView : UserControl
     private Control LogRow(LogEntry? e)
     {
         if (e is null) return new TextBlock();
-        var linked = e.SnapshotId is { } id && Client.Snapshots.FirstOrDefault(s => s.Id == id) is { } s
-            ? $"  ·  snapshot {s.ImportedUtc.ToLocalTime():yyyy-MM-dd}"
+        var linked = e.SnapshotId is { } id && Client.FindSnapshot(id) is { } found
+            ? $"  ·  {found.Grid.Name} snapshot {found.Snapshot.ImportedUtc.ToLocalTime():yyyy-MM-dd}"
             : "";
         var firstLine = e.Text.Split('\n', 2)[0];
         return new StackPanel

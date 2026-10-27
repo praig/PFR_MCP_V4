@@ -40,6 +40,16 @@ public partial class MainWindow : Window, IInventoryHost
         OpenButton.Click += async (_, _) => await PickAndLoadAsync();
 
         Clients = new ClientsView(_store, this, kdfIterations);
+        Clients.StateChanged += async (_, _) => await OnStoreStateChangedAsync();
+        Clients.DataChanged += (_, _) => RefreshPickers();
+
+        GridPicker.SelectionChanged += async (_, _) =>
+        {
+            if (_updatingPickers || GridPicker.SelectedItem is not GridChoice choice) return;
+            await Clients.OpenGridAsync(choice.ClientId, choice.GridId);
+        };
+        SaveToClientButton.Click += (_, _) => SaveLoadedToClient();
+        RefreshPickers();
 
         foreach (var (module, title, summary) in ModuleCatalog.All)
         {
@@ -70,8 +80,10 @@ public partial class MainWindow : Window, IInventoryHost
 
     public LoadedSource? LoadedSource { get; private set; }
 
-    /// <summary>Client and snapshot shown in Inventory, when opened from a client.</summary>
-    public (Client Client, SnapshotInfo Snapshot)? LoadedSnapshot { get; private set; }
+    /// <summary>Client, grid and snapshot shown in Inventory, when opened from a client.</summary>
+    public (Client Client, ClientGrid Grid, SnapshotInfo Snapshot)? LoadedSnapshot { get; private set; }
+
+    private bool _updatingPickers;
 
     public string StatusMessage => StatusText.Text ?? "";
 
@@ -118,12 +130,15 @@ public partial class MainWindow : Window, IInventoryHost
             var (inventory, source) = await Task.Run(() =>
             {
                 var inv = BackupParser.ParseFile(path);
+                // A grid without a name can't be identified, so it isn't loaded at all.
+                BackupParser.EnsureGridName(inv, name);
                 var src = new LoadedSource(name, new FileInfo(path).Length, ClientWorkspace.Sha256Of(path));
                 return (inv, src);
             });
 
             ShowLoaded(inventory, source, snapshot: null);
-            LoadedText.Text = $"{inventory.GridName ?? "Grid"}  ·  NIOS {ShortVersion(inventory.NiosVersion)}  ·  {name}";
+            RefreshPickers();
+            LoadedText.Text = $"{inventory.GridName}  ·  NIOS {ShortVersion(inventory.NiosVersion)}  ·  {name} (not saved)";
             Title = $"{inventory.GridName ?? name} — {AppInfo.ProductName}";
             StatusText.Text = $"Loaded {name} in {watch.Elapsed.TotalSeconds:0.0}s: {Counts(inventory)}";
             ShowModule(AppModule.Inventory);
@@ -144,25 +159,148 @@ public partial class MainWindow : Window, IInventoryHost
         }
     }
 
-    /// <summary>Shows a client's stored snapshot in Inventory.</summary>
-    public void ShowSnapshot(Client client, SnapshotInfo snapshot, GridInventory inventory)
+    /// <summary>Shows a client's stored snapshot in Inventory and remembers it for next time.</summary>
+    public void ShowSnapshot(Client client, ClientGrid grid, SnapshotInfo snapshot, GridInventory inventory,
+        bool switchToInventory)
     {
         ShowLoaded(inventory,
             new LoadedSource(snapshot.SourceFileName, snapshot.SourceBytes, snapshot.SourceSha256),
-            (client, snapshot));
+            (client, grid, snapshot));
         var when = snapshot.ImportedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
-        LoadedText.Text = $"{client.Name}  ·  {inventory.GridName ?? "Grid"}  ·  NIOS {ShortVersion(inventory.NiosVersion)}  ·  snapshot {when}";
-        Title = $"{client.Name} — {inventory.GridName ?? "Grid"} — {AppInfo.ProductName}";
-        StatusText.Text = $"Opened {client.Name} snapshot from {when}: {Counts(inventory)}";
-        ShowModule(AppModule.Inventory);
+        LoadedText.Text = $"NIOS {ShortVersion(inventory.NiosVersion)}  ·  snapshot {when}" +
+                          (snapshot.Label.Length > 0 ? $"  ·  {snapshot.Label}" : "");
+        Title = $"{client.Name} › {grid.Name} — {AppInfo.ProductName}";
+        StatusText.Text = $"Opened {client.Name} › {grid.Name} (snapshot {when}): {Counts(inventory)}";
+
+        try
+        {
+            Clients.Workspace?.RememberLastViewed(client.Id, grid.Id, snapshot.Id);
+        }
+        catch (IOException)
+        {
+            // Remembering is a convenience; never block viewing on it.
+        }
+
+        RefreshPickers();
+        if (switchToInventory) ShowModule(AppModule.Inventory);
     }
 
-    private void ShowLoaded(GridInventory inventory, LoadedSource source, (Client, SnapshotInfo)? snapshot)
+    private void ShowLoaded(GridInventory inventory, LoadedSource source, (Client, ClientGrid, SnapshotInfo)? snapshot)
     {
         LoadedInventory = inventory;
         LoadedSource = source;
         LoadedSnapshot = snapshot;
         Inventory.ShowInventory(inventory);
+        UpdateSaveBar();
+    }
+
+    // ---- Client › grid switcher and save bar --------------------------------
+
+    /// <summary>After unlocking, reopen the grid that was open last time (without leaving Clients).</summary>
+    private async Task OnStoreStateChangedAsync()
+    {
+        // Locking hides client data everywhere, including a client grid shown in Inventory.
+        if (Clients.Workspace is null && LoadedSnapshot is not null)
+        {
+            LoadedInventory = null;
+            LoadedSource = null;
+            LoadedSnapshot = null;
+            Inventory.ShowEmpty("Client data is locked. Unlock Clients to open a grid again.");
+            LoadedText.Text = "";
+            Title = AppInfo.ProductName;
+        }
+
+        RefreshPickers();
+        if (Clients.Workspace?.LastViewed() is { } last && LoadedInventory is null)
+        {
+            // Opens that grid's latest snapshot, the same as switching to it.
+            await Clients.OpenGridAsync(last.Client.Id, last.Grid.Id, switchToInventory: false);
+            StatusText.Text = $"Reopened {last.Client.Name} › {last.Grid.Name}. " + StatusText.Text;
+        }
+    }
+
+    /// <summary>Fills the header switcher and the save bar's client list from the store.</summary>
+    public void RefreshPickers()
+    {
+        _updatingPickers = true;
+        try
+        {
+            var clients = Clients.Workspace?.ListClients() ?? [];
+            var choices = clients
+                .SelectMany(c => c.Grids.Where(g => g.Snapshots.Count > 0).Select(g => new GridChoice(c.Id, g.Id, $"{c.Name} › {g.Name}")))
+                .OrderBy(c => c.Text, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            GridPicker.ItemsSource = choices;
+            GridPicker.IsEnabled = Clients.Workspace is not null && choices.Count > 0;
+            GridPicker.PlaceholderText = Clients.Workspace is null
+                ? "Unlock Clients to switch grids"
+                : choices.Count == 0 ? "No saved grids yet" : "Switch client › grid";
+            GridPicker.SelectedItem = LoadedSnapshot is { } open
+                ? choices.FirstOrDefault(c => c.ClientId == open.Client.Id && c.GridId == open.Grid.Id)
+                : null;
+
+            var previous = (SaveClientPicker.SelectedItem as ClientChoice)?.Id;
+            var clientChoices = clients.Select(c => new ClientChoice(c.Id, c.Name)).ToList();
+            SaveClientPicker.ItemsSource = clientChoices;
+            SaveClientPicker.SelectedItem = clientChoices.FirstOrDefault(c => c.Id == previous)
+                                            ?? (clientChoices.Count == 1 ? clientChoices[0] : null);
+        }
+        finally
+        {
+            _updatingPickers = false;
+        }
+        UpdateSaveBar();
+    }
+
+    private void UpdateSaveBar()
+    {
+        SaveBar.IsVisible = LoadedInventory is not null && LoadedSnapshot is null;
+        if (!SaveBar.IsVisible) return;
+
+        var unlocked = Clients.Workspace is not null;
+        var hasClients = SaveClientPicker.ItemCount > 0;
+        SaveClientPicker.IsVisible = SaveToClientButton.IsVisible = unlocked && hasClients;
+        SaveBarText.Text = !unlocked
+            ? $"{LoadedInventory!.GridName} isn't saved to a client. Unlock Clients to save it."
+            : !hasClients
+                ? $"{LoadedInventory!.GridName} isn't saved to a client. Create a client in Clients to save it."
+                : $"{LoadedInventory!.GridName} isn't saved to a client yet.";
+    }
+
+    /// <summary>Saves the backup open in Inventory to the chosen client, as a snapshot of its grid.</summary>
+    public void SaveLoadedToClient(string? clientId = null)
+    {
+        var workspace = Clients.Workspace;
+        clientId ??= (SaveClientPicker.SelectedItem as ClientChoice)?.Id;
+        if (workspace is null || LoadedInventory is not { } inventory || LoadedSource is not { } source) return;
+        if (clientId is null)
+        {
+            StatusText.Text = "Choose a client to save this grid to.";
+            return;
+        }
+
+        try
+        {
+            var (grid, info) = workspace.AddSnapshot(clientId, inventory, source.FileName, source.Bytes, source.Sha256);
+            var client = workspace.GetClient(clientId);
+            Clients.RefreshClients(clientId);
+            ShowSnapshot(client, client.FindGrid(grid.Id)!, info, inventory, switchToInventory: false);
+            StatusText.Text = $"Saved {source.FileName} to {client.Name} › {grid.Name}.";
+        }
+        catch (Exception ex) when (ex is InvalidDataException or ArgumentException or IOException)
+        {
+            StatusText.Text = $"Could not save: {ex.Message}";
+        }
+    }
+
+    private sealed record GridChoice(string ClientId, string GridId, string Text)
+    {
+        public override string ToString() => Text;
+    }
+
+    private sealed record ClientChoice(string Id, string Name)
+    {
+        public override string ToString() => Name;
     }
 
     private static string Counts(GridInventory inv) =>

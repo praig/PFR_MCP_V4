@@ -227,4 +227,34 @@ public sealed class ClientWorkspaceTests : IDisposable
         Assert.Equal("Acme", Assert.Single(reopened.ListClients()).Name);
         Assert.Equal("Visit", Assert.Single(reopened.GetLog(client.Id)).Title);
     }
+
+    [Fact]
+    public void Backups_without_a_grid_name_are_refused_and_nothing_is_stored()
+    {
+        var client = _ws.CreateClient("Acme");
+        var unnamed = BackupParser.Parse(OneDbFixture.XmlStream());
+        unnamed.GridName = "  ";
+
+        var ex = Assert.Throws<InvalidDataException>(() => _ws.AddSnapshot(client.Id, unnamed, "nameless.bak", 1, "x"));
+        Assert.Contains("no grid name", ex.Message);
+        Assert.Contains("nameless.bak", ex.Message);
+
+        Assert.Empty(_ws.GetClient(client.Id).Grids);
+        Assert.False(Directory.Exists(Path.Combine(_dir, "clients", client.Id, "grids")));
+    }
+
+    [Fact]
+    public void Last_viewed_grid_is_remembered_and_forgotten_when_deleted()
+    {
+        var client = _ws.CreateClient("Acme");
+        var (grid, snap) = _ws.AddSnapshot(client.Id, BackupParser.Parse(OneDbFixture.XmlStream()), "a.bak", 1, "a");
+        Assert.Null(_ws.LastViewed());
+
+        _ws.RememberLastViewed(client.Id, grid.Id, snap.Id);
+        var last = _ws.LastViewed();
+        Assert.Equal((client.Id, grid.Id, snap.Id), (last!.Value.Client.Id, last.Value.Grid.Id, last.Value.Snapshot.Id));
+
+        _ws.DeleteSnapshot(client.Id, grid.Id, snap.Id);
+        Assert.Null(_ws.LastViewed());
+    }
 }
