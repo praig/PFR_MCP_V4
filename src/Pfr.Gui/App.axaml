@@ -1,9 +1,17 @@
 <Application xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              x:Class="Pfr.Gui.App"
-             RequestedThemeVariant="Default">
+             RequestedThemeVariant="Dark">
   <Application.Styles>
     <FluentTheme />
     <StyleInclude Source="avares://Avalonia.Controls.DataGrid/Themes/Fluent.xaml" />
+
+    <!-- Dark palette: soften Fluent's pure-black surfaces to match the window. -->
+    <Style Selector="DataGridColumnHeader">
+      <Setter Property="Background" Value="#26282C" />
+    </Style>
+    <Style Selector="TextBox">
+      <Setter Property="Background" Value="#26282C" />
+    </Style>
   </Application.Styles>
 </Application>

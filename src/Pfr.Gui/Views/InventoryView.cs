@@ -135,7 +135,9 @@ public sealed class InventoryView : UserControl
                 Margin = new Thickness(0, 0, 12, 12),
                 Padding = new Thickness(16, 12),
                 CornerRadius = new CornerRadius(8),
-                Background = new SolidColorBrush(Color.FromArgb(22, 128, 128, 128)),
+                Background = new SolidColorBrush(Color.FromArgb(14, 255, 255, 255)),
+                BorderBrush = new SolidColorBrush(Color.FromArgb(26, 255, 255, 255)),
+                BorderThickness = new Thickness(1),
                 Child = new StackPanel
                 {
                     Spacing = 2,

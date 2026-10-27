@@ -4,7 +4,8 @@
         Title="PFR_MCP_V4"
         Width="1280" Height="800"
         MinWidth="900" MinHeight="560"
-        WindowStartupLocation="CenterScreen">
+        WindowStartupLocation="CenterScreen"
+        Background="#1C1D20">
   <Window.Resources>
     <!-- Fluent's default tab header size (24) is too large for module tabs. -->
     <x:Double x:Key="TabItemHeaderFontSize">16</x:Double>
