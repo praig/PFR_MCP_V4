@@ -29,12 +29,30 @@ public sealed class InventoryView : UserControl
         };
         _sections.SelectionChanged += (_, _) =>
         {
-            if (_sections.SelectedItem is SectionItem item) _body!.Content = _pages[item.Name];
+            if (_sections.SelectedItem is SectionItem item && _pages.TryGetValue(item.Name, out var page))
+            {
+                _body!.Content = page;
+            }
         };
 
         _body = new ContentControl();
+
+        // Built once and reused for every backup: Avalonia controls can only have
+        // one parent, so re-wrapping _sections/_body on each load would throw.
+        var nav = new Border
+        {
+            BorderThickness = new Thickness(0, 0, 1, 0),
+            BorderBrush = new SolidColorBrush(Color.FromArgb(40, 128, 128, 128)),
+            Padding = new Thickness(6, 10),
+            Child = _sections,
+        };
+        DockPanel.SetDock(nav, Dock.Left);
+        _loadedLayout = new DockPanel { Children = { nav, _body } };
+
         ShowEmpty();
     }
+
+    private readonly DockPanel _loadedLayout;
 
     /// <summary>Raised when the user clicks "Open backup" in the empty state.</summary>
     public event EventHandler? OpenRequested;
@@ -49,6 +67,7 @@ public sealed class InventoryView : UserControl
     {
         _pages.Clear();
         _sections.ItemsSource = null;
+        _body.Content = null;
 
         var open = new Button
         {
@@ -111,18 +130,9 @@ public sealed class InventoryView : UserControl
         }
 
         _sections.ItemsSource = items;
-
-        var nav = new Border
-        {
-            BorderThickness = new Thickness(0, 0, 1, 0),
-            BorderBrush = new SolidColorBrush(Color.FromArgb(40, 128, 128, 128)),
-            Padding = new Thickness(6, 10),
-            Child = _sections,
-        };
-        DockPanel.SetDock(nav, Dock.Left);
-
-        Content = new DockPanel { Children = { nav, _body } };
+        Content = _loadedLayout;
         _sections.SelectedIndex = 0;
+        _body.Content = _pages["Overview"]; // also when Overview was already selected
     }
 
     public void SelectSection(string name)

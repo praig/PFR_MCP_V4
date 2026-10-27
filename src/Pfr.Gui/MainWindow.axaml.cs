@@ -92,17 +92,31 @@ public partial class MainWindow : Window
         catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException
                                        or System.Xml.XmlException)
         {
-            StatusText.Text = $"Could not read {name}: {ex.Message}";
-            if (LoadedInventory is null)
-            {
-                Inventory.ShowEmpty($"Could not read {name}. {ex.Message}");
-            }
+            ShowLoadError(name, ex.Message);
+        }
+        catch (Exception ex)
+        {
+            // Never let a load problem close the app; keep whatever was showing before.
+            ShowLoadError(name, $"unexpected error ({ex.GetType().Name}): {ex.Message}");
         }
         finally
         {
             OpenButton.IsEnabled = true;
         }
     }
+
+    private void ShowLoadError(string fileName, string message)
+    {
+        StatusText.Text = $"Could not read {fileName}: {message}";
+        if (LoadedInventory is null)
+        {
+            Inventory.ShowEmpty($"Could not read {fileName}. {message}");
+        }
+    }
+
+    /// <summary>Shows an error that escaped a handler in the status bar.</summary>
+    public void ReportUnexpectedError(Exception ex) =>
+        StatusText.Text = $"Something went wrong ({ex.GetType().Name}): {ex.Message}";
 
     /// <summary>"9.0.8-54134-924d94e0dcd0" → "9.0.8".</summary>
     private static string ShortVersion(string? version) =>

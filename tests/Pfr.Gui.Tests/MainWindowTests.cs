@@ -109,6 +109,42 @@ public class MainWindowTests
     }
 
     [AvaloniaFact]
+    public async Task Opening_a_second_backup_replaces_the_first()
+    {
+        var window = new MainWindow();
+        window.Show();
+
+        await window.LoadBackupAsync(BackupPath());
+        window.Inventory.SelectSection("Zones");
+        await window.LoadBackupAsync(BackupPath());
+        await window.LoadBackupAsync(BackupPath());
+        Snapshot(window, "11-reopened");
+
+        Assert.True(window.IsVisible);
+        Assert.StartsWith("Loaded", window.StatusMessage);
+        Assert.Equal("Overview", window.Inventory.SelectedSection);
+        window.Inventory.SelectSection("Members");
+        Assert.IsType<FilterableTable>(window.Inventory.CurrentPage);
+    }
+
+    [AvaloniaFact]
+    public async Task Bad_file_after_good_one_keeps_the_loaded_grid()
+    {
+        var bad = Path.Combine(Path.GetTempPath(), $"pfr-bad-{Guid.NewGuid():N}.bak");
+        await File.WriteAllTextAsync(bad, "not a backup");
+
+        var window = new MainWindow();
+        window.Show();
+        await window.LoadBackupAsync(BackupPath());
+        await window.LoadBackupAsync(bad);
+
+        Assert.NotNull(window.LoadedInventory);
+        Assert.StartsWith("Could not read", window.StatusMessage);
+        Assert.NotEmpty(window.Inventory.SectionNames);
+        File.Delete(bad);
+    }
+
+    [AvaloniaFact]
     public async Task Bad_file_shows_error_and_keeps_window_usable()
     {
         var path = Path.Combine(Path.GetTempPath(), $"pfr-bad-{Guid.NewGuid():N}.bak");
