@@ -49,6 +49,12 @@ internal static class OneDbFixture
             ("recursion_enabled", "true"), ("ddns_update_key", SecretValue), ("tsig_key_alg", "HMAC-SHA256")),
         O("dns.view", ("zone", ".1"), ("displayname", "External"), ("network_view", "0"),
             ("recursion_enabled", "false")),
+        // Internal roots that also carry dns.view objects but are not real views.
+        O("dns.zone", ("zone_type", "View"), ("zone", ".."), ("name", "idns_root"), ("fqdn", "idns_root")),
+        O("dns.view", ("zone", ".idns_root"), ("displayname", " "), ("network_view", "0")),
+        O("dns.zone", ("zone_type", "NonDNSHost"), ("zone", ".."), ("name", "non_DNS_host_root"),
+            ("fqdn", "non_DNS_host_root")),
+        O("dns.view", ("zone", ".non_DNS_host_root"), ("displayname", " "), ("network_view", "0")),
 
         // Zones
         O("dns.zone", ("zone_type", "Authoritative"), ("zone", "._default"), ("name", "test.lab"),
@@ -93,6 +99,12 @@ internal static class OneDbFixture
         // DHCP
         O("dns.dhcp_failover_association", ("name", "gm-gmc"), ("primary_server_vnode", "0"),
             ("secondary_server_vnode", "7"), ("ms_server", "."), ("shared_secret", SecretValue)),
+        O("dns.dhcp_failover_association", ("name", "dc1-dc2"), ("ms_server", "12"),
+            ("ms_failover_address", "192.0.2.32"), ("ms_failover_partner", "192.0.2.31"),
+            ("ms_failover_mode", "LOADBALANCE")),
+        O("dns.dhcp_failover_association", ("name", "dc1-dc2"), ("ms_server", "13"),
+            ("ms_failover_address", "192.0.2.31"), ("ms_failover_partner", "192.0.2.32"),
+            ("ms_failover_mode", "LOADBALANCE")),
         O("dns.dhcp_range", ("network", "10.0.0.0/24/0"), ("start_address", "10.0.0.100"),
             ("end_address", "10.0.0.199"), ("network_view", "0"), ("server_association_type", "Failover"),
             ("failover_association", "gm-gmc."), ("member", "0"), ("ms_server", ".")),

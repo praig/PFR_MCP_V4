@@ -13,7 +13,7 @@ public class OneDbReaderTests
 
         Assert.All(objects, o => Assert.Contains(o.Type, new[] { "one.cluster", "dns.view" }));
         Assert.Single(objects, o => o.Type == "one.cluster");
-        Assert.Equal(2, objects.Count(o => o.Type == "dns.view"));
+        Assert.Equal(4, objects.Count(o => o.Type == "dns.view")); // raw objects, before view filtering
         Assert.Equal("9.0.8-12345-abc", reader.DatabaseVersion);
     }
 

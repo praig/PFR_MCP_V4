@@ -127,12 +127,23 @@ public static class BackupParser
         inv.NetworkViews.Sort((a, b) => a.Id.CompareTo(b.Id));
     }
 
+    /// <summary>View-type roots that are NIOS internals, not user DNS views (DTC root).</summary>
+    private static readonly HashSet<string> InternalViewNames = new(StringComparer.Ordinal) { "idns_root" };
+
     private static void AddDnsViews(GridInventory inv, Dictionary<string, List<OneDbObject>> byType)
     {
+        // Real views are top-level zone objects of type "View". Other top-level roots
+        // (non_DNS_host_root*, srg_root, rpz_root) also get dns.view objects but aren't views.
+        var viewKeys = byType["dns.zone"]
+            .Where(z => z.Get("zone") == ".." && z.Get("zone_type") == "View"
+                        && !InternalViewNames.Contains(z.GetOrEmpty("name")))
+            .Select(z => ZoneKey("..", z.GetOrEmpty("name")))
+            .ToHashSet(StringComparer.Ordinal);
+
         foreach (var o in byType["dns.view"])
         {
             var key = o.GetOrEmpty("zone");
-            if (key.Length == 0) continue;
+            if (!viewKeys.Contains(key)) continue;
             var display = o.GetOrEmpty("displayname").Trim();
             inv.DnsViews.Add(new DnsView
             {
@@ -248,14 +259,23 @@ public static class BackupParser
     {
         foreach (var o in byType["dns.dhcp_failover_association"])
         {
+            var isMs = IsMsServer(o.Get("ms_server"));
             inv.FailoverAssociations.Add(new FailoverAssociation
             {
                 Name = o.GetOrEmpty("name"),
-                PrimaryOid = o.GetInt("primary_server_vnode"),
-                SecondaryOid = o.GetInt("secondary_server_vnode"),
-                IsMicrosoft = IsMsServer(o.Get("ms_server")),
+                PrimaryOid = isMs ? null : o.GetInt("primary_server_vnode"),
+                SecondaryOid = isMs ? null : o.GetInt("secondary_server_vnode"),
+                IsMicrosoft = isMs,
+                MsServerAddress = isMs ? NullIfEmpty(o.Get("ms_failover_address")) : null,
+                MsPartnerAddress = isMs ? NullIfEmpty(o.Get("ms_failover_partner")) : null,
+                MsMode = isMs ? NullIfEmpty(o.Get("ms_failover_mode")) : null,
             });
         }
+        inv.FailoverAssociations.Sort((a, b) =>
+        {
+            var c = string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase);
+            return c != 0 ? c : IpSort.Compare(a.MsServerAddress, b.MsServerAddress);
+        });
 
         foreach (var o in byType["dns.dhcp_range"])
         {

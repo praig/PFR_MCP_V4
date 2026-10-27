@@ -60,10 +60,11 @@ public static class InventorySummary
             sb.AppendLine($"  {(g.Key.Length > 0 ? g.Key : "(none)"),-16} {g.Count(),5}");
         }
         sb.AppendLine($"Failover associations ({inv.FailoverAssociations.Count})");
-        foreach (var f in inv.FailoverAssociations.OrderBy(f => f.Name))
+        foreach (var f in inv.FailoverAssociations)
         {
             var peers = f.IsMicrosoft
-                ? "Microsoft DHCP"
+                ? $"Microsoft DHCP  {f.MsServerAddress ?? "?"} <-> {f.MsPartnerAddress ?? "?"}"
+                  + (f.MsMode is null ? "" : $"  ({f.MsMode.ToLowerInvariant()})")
                 : $"{inv.FindMember(f.PrimaryOid)?.HostName ?? "?"} / {inv.FindMember(f.SecondaryOid)?.HostName ?? "?"}";
             sb.AppendLine($"  {f.Name,-20} {peers}");
         }

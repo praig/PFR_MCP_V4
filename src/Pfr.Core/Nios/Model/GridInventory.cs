@@ -134,6 +134,12 @@ public sealed class FailoverAssociation
     public int? PrimaryOid { get; set; }
     public int? SecondaryOid { get; set; }
     public bool IsMicrosoft { get; set; }
+    /// <summary>Microsoft failover only: this server's address.</summary>
+    public string? MsServerAddress { get; set; }
+    /// <summary>Microsoft failover only: the partner server's address.</summary>
+    public string? MsPartnerAddress { get; set; }
+    /// <summary>Microsoft failover only: LOADBALANCE or HOTSTANDBY.</summary>
+    public string? MsMode { get; set; }
 }
 
 public enum DnsRecordType { A, AAAA, CNAME, PTR, Host }

@@ -105,9 +105,29 @@ public class BackupParserTests
         Assert.Equal(16, inv.DhcpRanges.Single(r => r.AssociationType == "Member").MemberOid);
         Assert.True(inv.DhcpRanges.Single(r => r.AssociationType == "None").IsIpv6);
 
-        var assoc = Assert.Single(inv.FailoverAssociations);
+        var assoc = Assert.Single(inv.FailoverAssociations, f => !f.IsMicrosoft);
         Assert.Equal("gm.lab.test", inv.FindMember(assoc.PrimaryOid)!.HostName);
         Assert.Equal("gmc.lab.test", inv.FindMember(assoc.SecondaryOid)!.HostName);
+    }
+
+    [Fact]
+    public void Distinguishes_microsoft_failover_associations()
+    {
+        var ms = Parse().FailoverAssociations.Where(f => f.IsMicrosoft).ToList();
+        Assert.Equal(2, ms.Count);
+        Assert.Equal(["192.0.2.31", "192.0.2.32"], ms.Select(f => f.MsServerAddress)); // sorted by address
+        Assert.Equal("192.0.2.32", ms[0].MsPartnerAddress);
+        Assert.All(ms, f => Assert.Null(f.PrimaryOid));
+
+        var text = InventorySummary.Render(Parse());
+        Assert.Contains("192.0.2.31 <-> 192.0.2.32", text);
+    }
+
+    [Fact]
+    public void Skips_internal_roots_that_look_like_views()
+    {
+        var names = Parse().DnsViews.Select(v => v.Key).ToList();
+        Assert.Equal([".1", "._default"], names.Order(StringComparer.Ordinal));
     }
 
     [Theory]
