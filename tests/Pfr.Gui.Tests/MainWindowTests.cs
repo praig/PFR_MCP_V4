@@ -40,21 +40,22 @@ public class MainWindowTests
     }
 
     [AvaloniaFact]
-    public void Starts_on_inventory_with_empty_state()
+    public void Starts_on_clients_with_empty_inventory()
     {
-        var window = new MainWindow();
+        var window = TestWindows.New();
         window.Show();
         Snapshot(window, "01-empty");
 
         Assert.Null(window.LoadedInventory);
         Assert.Empty(window.Inventory.SectionNames);
-        Assert.Equal("Inventory", ((TabItem)window.FindControl<TabControl>("ModuleTabs")!.SelectedItem!).Header);
+        // The app opens on Clients; Inventory starts empty.
+        Assert.Equal("Clients", ((TabItem)window.FindControl<TabControl>("ModuleTabs")!.SelectedItem!).Header);
     }
 
     [AvaloniaFact]
     public async Task Loads_backup_and_shows_every_section()
     {
-        var window = new MainWindow();
+        var window = TestWindows.New();
         window.Show();
 
         await window.LoadBackupAsync(BackupPath());
@@ -90,7 +91,7 @@ public class MainWindowTests
     [AvaloniaFact]
     public async Task Search_filters_rows()
     {
-        var window = new MainWindow();
+        var window = TestWindows.New();
         window.Show();
         await window.LoadBackupAsync(BackupPath());
 
@@ -111,7 +112,7 @@ public class MainWindowTests
     [AvaloniaFact]
     public async Task Opening_a_second_backup_replaces_the_first()
     {
-        var window = new MainWindow();
+        var window = TestWindows.New();
         window.Show();
 
         await window.LoadBackupAsync(BackupPath());
@@ -133,7 +134,7 @@ public class MainWindowTests
         var bad = Path.Combine(Path.GetTempPath(), $"pfr-bad-{Guid.NewGuid():N}.bak");
         await File.WriteAllTextAsync(bad, "not a backup");
 
-        var window = new MainWindow();
+        var window = TestWindows.New();
         window.Show();
         await window.LoadBackupAsync(BackupPath());
         await window.LoadBackupAsync(bad);
@@ -150,7 +151,7 @@ public class MainWindowTests
         var path = Path.Combine(Path.GetTempPath(), $"pfr-bad-{Guid.NewGuid():N}.bak");
         await File.WriteAllTextAsync(path, "not a backup");
 
-        var window = new MainWindow();
+        var window = TestWindows.New();
         window.Show();
         await window.LoadBackupAsync(path);
         Snapshot(window, "10-bad-file");

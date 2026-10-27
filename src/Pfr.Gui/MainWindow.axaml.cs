@@ -4,46 +4,83 @@ using Avalonia.Controls;
 using Avalonia.Layout;
 using Avalonia.Platform.Storage;
 using Pfr.Core;
+using Pfr.Core.Clients;
 using Pfr.Core.Nios.Backup;
 using Pfr.Core.Nios.Model;
+using Pfr.Core.Storage;
 using Pfr.Gui.Views;
 
 namespace Pfr.Gui;
 
-public partial class MainWindow : Window
+public partial class MainWindow : Window, IInventoryHost
 {
     private static readonly FilePickerFileType BackupFiles = new("NIOS grid backup")
     {
         Patterns = ["*.bak", "*.tar.gz", "*.tgz", "*.tar", "*.xml"],
     };
 
-    public MainWindow()
+    private readonly SecureStore _store;
+
+    /// <summary>Used by the designer and the app: client data next to the application.</summary>
+    public MainWindow() : this(DataLocation.Resolve())
+    {
+    }
+
+    /// <param name="dataFolder">Where encrypted client data lives.</param>
+    /// <param name="kdfIterations">PBKDF2 iterations for a new store (tests use fewer).</param>
+    public MainWindow(string dataFolder, int kdfIterations = SecureStore.DefaultIterations)
     {
         InitializeComponent();
 
         BannerText.Text = AppInfo.Banner;
+        _store = new SecureStore(dataFolder);
+
         Inventory = new InventoryView();
         Inventory.OpenRequested += async (_, _) => await PickAndLoadAsync();
         OpenButton.Click += async (_, _) => await PickAndLoadAsync();
+
+        Clients = new ClientsView(_store, this, kdfIterations);
 
         foreach (var (module, title, summary) in ModuleCatalog.All)
         {
             ModuleTabs.Items.Add(new TabItem
             {
                 Header = title,
-                Content = module == AppModule.Inventory ? Inventory : Placeholder(summary),
+                Content = module switch
+                {
+                    AppModule.Inventory => Inventory,
+                    AppModule.ClientWorkspace => Clients,
+                    _ => Placeholder(summary),
+                },
             });
         }
 
-        // Open on the Inventory tab, the only module built so far.
-        ModuleTabs.SelectedIndex = ModuleCatalog.All.ToList().FindIndex(m => m.Module == AppModule.Inventory);
+        // Start on Clients: work is organised per client.
+        ShowModule(AppModule.ClientWorkspace);
+
+        // Closing the app forgets the key; data stays encrypted on disk.
+        Closed += (_, _) => _store.Dispose();
     }
 
     public InventoryView Inventory { get; }
 
+    public ClientsView Clients { get; }
+
     public GridInventory? LoadedInventory { get; private set; }
 
+    public LoadedSource? LoadedSource { get; private set; }
+
+    /// <summary>Client and snapshot shown in Inventory, when opened from a client.</summary>
+    public (Client Client, SnapshotInfo Snapshot)? LoadedSnapshot { get; private set; }
+
     public string StatusMessage => StatusText.Text ?? "";
+
+    public string HeaderText => LoadedText.Text ?? "";
+
+    public void SetStatus(string text) => StatusText.Text = text;
+
+    public void ShowModule(AppModule module) =>
+        ModuleTabs.SelectedIndex = ModuleCatalog.All.ToList().FindIndex(m => m.Module == module);
 
     private static Control Placeholder(string summary) => new TextBlock
     {
@@ -78,16 +115,18 @@ public partial class MainWindow : Window
         try
         {
             var watch = Stopwatch.StartNew();
-            var inventory = await Task.Run(() => BackupParser.ParseFile(path));
-            LoadedInventory = inventory;
-            Inventory.ShowInventory(inventory);
+            var (inventory, source) = await Task.Run(() =>
+            {
+                var inv = BackupParser.ParseFile(path);
+                var src = new LoadedSource(name, new FileInfo(path).Length, ClientWorkspace.Sha256Of(path));
+                return (inv, src);
+            });
 
+            ShowLoaded(inventory, source, snapshot: null);
             LoadedText.Text = $"{inventory.GridName ?? "Grid"}  ·  NIOS {ShortVersion(inventory.NiosVersion)}  ·  {name}";
             Title = $"{inventory.GridName ?? name} — {AppInfo.ProductName}";
-            StatusText.Text = $"Loaded {name} in {watch.Elapsed.TotalSeconds:0.0}s: " +
-                              $"{inventory.Members.Count} members, {inventory.Zones.Count} zones, " +
-                              $"{inventory.Networks.Count(n => !n.IsContainer)} networks, " +
-                              $"{inventory.DhcpRanges.Count} DHCP ranges, {inventory.Records.Count} records";
+            StatusText.Text = $"Loaded {name} in {watch.Elapsed.TotalSeconds:0.0}s: {Counts(inventory)}";
+            ShowModule(AppModule.Inventory);
         }
         catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException
                                        or System.Xml.XmlException)
@@ -104,6 +143,32 @@ public partial class MainWindow : Window
             OpenButton.IsEnabled = true;
         }
     }
+
+    /// <summary>Shows a client's stored snapshot in Inventory.</summary>
+    public void ShowSnapshot(Client client, SnapshotInfo snapshot, GridInventory inventory)
+    {
+        ShowLoaded(inventory,
+            new LoadedSource(snapshot.SourceFileName, snapshot.SourceBytes, snapshot.SourceSha256),
+            (client, snapshot));
+        var when = snapshot.ImportedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
+        LoadedText.Text = $"{client.Name}  ·  {inventory.GridName ?? "Grid"}  ·  NIOS {ShortVersion(inventory.NiosVersion)}  ·  snapshot {when}";
+        Title = $"{client.Name} — {inventory.GridName ?? "Grid"} — {AppInfo.ProductName}";
+        StatusText.Text = $"Opened {client.Name} snapshot from {when}: {Counts(inventory)}";
+        ShowModule(AppModule.Inventory);
+    }
+
+    private void ShowLoaded(GridInventory inventory, LoadedSource source, (Client, SnapshotInfo)? snapshot)
+    {
+        LoadedInventory = inventory;
+        LoadedSource = source;
+        LoadedSnapshot = snapshot;
+        Inventory.ShowInventory(inventory);
+    }
+
+    private static string Counts(GridInventory inv) =>
+        $"{inv.Members.Count} members, {inv.Zones.Count} zones, " +
+        $"{inv.Networks.Count(n => !n.IsContainer)} networks, " +
+        $"{inv.DhcpRanges.Count} DHCP ranges, {inv.Records.Count} records";
 
     private void ShowLoadError(string fileName, string message)
     {

@@ -30,3 +30,6 @@ onedb.xml
 *.vault
 workspaces/
 samples/private/
+
+# Local client data folder (encrypted, but never commit it)
+PfrData/
