@@ -354,8 +354,10 @@ public static class TableCells
             text.Bind(TextBlock.ForegroundProperty, new Binding(".")
             {
                 Mode = BindingMode.OneWay,
-                Converter = new FuncValueConverter<object?, IBrush?>(row =>
-                    StatusBrush(cell.Convert(row, typeof(string), null, System.Globalization.CultureInfo.InvariantCulture) as string)),
+                // Unflagged statuses keep the inherited text color (a null brush would hide the text).
+                Converter = new FuncValueConverter<object?, object?>(row =>
+                    (object?)StatusBrush(cell.Convert(row, typeof(string), null, System.Globalization.CultureInfo.InvariantCulture) as string)
+                    ?? AvaloniaProperty.UnsetValue),
             });
         }
         return text;
@@ -364,12 +366,15 @@ public static class TableCells
     private static readonly IBrush Danger = new SolidColorBrush(Color.Parse("#F47067"));
     private static readonly IBrush Warning = new SolidColorBrush(Color.Parse("#E5B54B"));
 
-    /// <summary>Red for expired, amber for expiring, otherwise the default text color.</summary>
+    /// <summary>Red for expired / high severity, amber for expiring / medium, otherwise the default text color.</summary>
     public static IBrush? StatusBrush(string? status) => status switch
     {
         null or "" => null,
-        _ when status.StartsWith("Expired", StringComparison.OrdinalIgnoreCase) => Danger,
-        _ when status.StartsWith("Expires", StringComparison.OrdinalIgnoreCase) => Warning,
+        _ when status.StartsWith("Expired", StringComparison.OrdinalIgnoreCase)
+               || status.Equals("High", StringComparison.OrdinalIgnoreCase) => Danger,
+        _ when status.StartsWith("Expires", StringComparison.OrdinalIgnoreCase)
+               || status.StartsWith("Expiring", StringComparison.OrdinalIgnoreCase)
+               || status.Equals("Medium", StringComparison.OrdinalIgnoreCase) => Warning,
         _ => null,
     };
 }

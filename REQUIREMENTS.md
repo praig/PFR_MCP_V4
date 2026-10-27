@@ -220,9 +220,14 @@ Scope is **NIOS (on-prem grids)**. Forward Networks integration is **deferred** 
 
 ---
 
-## 12. Module 4 — Reports
+## 12. Module 4 — Reports ✅ (first two reports)
 
-Renamed from "Health check". Will hold **predefined reports** (health checks, CNAME resolution, licenses, …) and a **data explorer** for the stored grid data. [PENDING] design — see §14.
+Renamed from "Health check". Holds **predefined reports** and a **data explorer**. Reports run on the grid currently open (picked with the header's Client › Grid switcher or Open backup…), from the stored snapshot — no reloading of backups.
+
+### 12.0 Available now ✅
+- **License expiry** — every license (per member/node and grid-wide) with expiry date and days left, soonest first; expired in red, expiring within a chosen window (30/60/90/180/365 days, default 90) in amber; each member's next expiry from NIOS's license summary (subscription licenses) included when it adds information.
+- **Dangling CNAMEs** — offline check described in §12.5; summary counts (dangling, takeover risks, not verified, resolving); filters to show resolving CNAMEs and targets outside the grid. Host aliases included; RPZ rules excluded.
+- **Explore data** — placeholder only. Planned: list the tables (object types) found in the backup XML, show their fields, and query against them.
 
 ### 12.1 Engine
 - Rules with severity levels, defined in YAML/JSON files loaded at runtime.
@@ -274,7 +279,6 @@ Renamed from "Health check". Will hold **predefined reports** (health checks, CN
 | 7 | SNMP versions in use (v3 only, or v2c too) | §11 |
 | 8 | Default resolver for live CNAME checks | §12.5 |
 | 9 | Report branding (logo, company name) | §5 |
+| 10 | Explore data: query language/UI (and whether it reads the raw XML or the stored snapshot) | §12 |
 
-| 10 | Reports: which predefined reports first; what "explore the database" should allow | §12 |
-
-Resolved: sample backup provided (lab grid, NIOS 9.0.8); client workspace storage (next to the app), encryption (master password) and snapshots (parsed inventory only).
+Resolved: first reports are license expiry and dangling CNAMEs; sample backup provided (lab grid, NIOS 9.0.8); client workspace storage (next to the app), encryption (master password) and snapshots (parsed inventory only).

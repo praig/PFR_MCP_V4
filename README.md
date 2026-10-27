@@ -8,7 +8,7 @@ Designed to run on **air-gapped** machines as self-contained executables with no
 
 See **[REQUIREMENTS.md](REQUIREMENTS.md)** for the full specification and open decisions.
 
-> Status: early development. Inventory and encrypted client workspaces (clients → grids → snapshots) work in the GUI and CLI.
+> Status: early development. Inventory, encrypted client workspaces (clients → grids → snapshots) and the first reports work.
 
 ## Quick start
 
@@ -22,6 +22,13 @@ dotnet run --project src/Pfr.Gui -- path/to/grid-backup.bak
 The Inventory module shows an overview plus searchable, sortable tables of members, DNS views,
 zones, networks, DHCP ranges, DHCP failover and DNS records. Search matches every word you type
 across all columns; rows can be multi-selected and copied (Ctrl+C) with headers.
+
+### Reports
+
+The Reports tab runs on whichever grid is open: **License expiry** (expired and soon-to-expire
+licenses, with a selectable window) and **Dangling CNAMEs** (CNAME chains followed through the
+grid's own zones, flagging missing, address-less, disabled and looping targets plus possible
+subdomain-takeover risks). *Explore data* is a placeholder for now.
 
 ### Client data
 

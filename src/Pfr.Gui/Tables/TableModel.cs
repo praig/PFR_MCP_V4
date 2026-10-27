@@ -9,7 +9,7 @@ public enum ColumnKind
     /// <summary>IP address or prefix ("10.0.0.0/24"); sorts numerically.</summary>
     Ip,
     Number,
-    /// <summary>Text shown red when it starts with "Expired", amber when "Expires".</summary>
+    /// <summary>Colored text: red for "Expired"/"High", amber for "Expires…"/"Expiring"/"Medium".</summary>
     Status,
 }
 

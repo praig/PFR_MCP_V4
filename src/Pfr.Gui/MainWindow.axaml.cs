@@ -40,6 +40,7 @@ public partial class MainWindow : Window, IInventoryHost
         OpenButton.Click += async (_, _) => await PickAndLoadAsync();
 
         Clients = new ClientsView(_store, this, kdfIterations);
+        Reports = new ReportsView();
         Clients.StateChanged += async (_, _) => await OnStoreStateChangedAsync();
         Clients.DataChanged += (_, _) => RefreshPickers();
 
@@ -60,6 +61,7 @@ public partial class MainWindow : Window, IInventoryHost
                 {
                     AppModule.Inventory => Inventory,
                     AppModule.ClientWorkspace => Clients,
+                    AppModule.Reports => Reports,
                     _ => Placeholder(summary),
                 },
             });
@@ -75,6 +77,8 @@ public partial class MainWindow : Window, IInventoryHost
     public InventoryView Inventory { get; }
 
     public ClientsView Clients { get; }
+
+    public ReportsView Reports { get; }
 
     public GridInventory? LoadedInventory { get; private set; }
 
@@ -191,6 +195,9 @@ public partial class MainWindow : Window, IInventoryHost
         LoadedSource = source;
         LoadedSnapshot = snapshot;
         Inventory.ShowInventory(inventory);
+        Reports.ShowInventory(inventory, snapshot is { } x
+            ? $"{x.Item1.Name} › {x.Item2.Name}  (snapshot {x.Item3.ImportedUtc.ToLocalTime():yyyy-MM-dd HH:mm})"
+            : $"{inventory.GridName}  ({source.FileName}, not saved to a client)");
         UpdateSaveBar();
     }
 
@@ -206,6 +213,7 @@ public partial class MainWindow : Window, IInventoryHost
             LoadedSource = null;
             LoadedSnapshot = null;
             Inventory.ShowEmpty("Client data is locked. Unlock Clients to open a grid again.");
+            Reports.ShowInventory(null, "");
             LoadedText.Text = "";
             Title = AppInfo.ProductName;
         }
