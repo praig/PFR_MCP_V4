@@ -46,10 +46,19 @@ public sealed class TableDefinition
 /// <summary>Sorts rows by one column, using numeric/IP order where the column calls for it.</summary>
 public sealed class ColumnComparer(int index, ColumnKind kind) : IComparer
 {
-    public int Compare(object? x, object? y)
+    public int Compare(object? x, object? y) => CompareCells(CellsOf(x), CellsOf(y));
+
+    private static IReadOnlyList<string>? CellsOf(object? row) => row switch
     {
-        var a = (x as TableRow)?.Cells[index] ?? "";
-        var b = (y as TableRow)?.Cells[index] ?? "";
+        TableRow t => t.Cells,
+        TreeRow t => t.Cells,
+        _ => null,
+    };
+
+    public int CompareCells(IReadOnlyList<string>? x, IReadOnlyList<string>? y)
+    {
+        var a = x?[index] ?? "";
+        var b = y?[index] ?? "";
 
         // Blank cells always sort last.
         if (a.Length == 0 || b.Length == 0)

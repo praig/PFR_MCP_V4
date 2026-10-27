@@ -94,10 +94,20 @@ public sealed class InventoryView : UserControl
         _pages["Overview"] = BuildOverview(inventory);
         items.Add(new SectionItem("Overview", null));
 
-        foreach (var table in InventoryTables.Build(inventory))
+        foreach (var section in InventoryTables.Build(inventory))
         {
-            _pages[table.Title] = new FilterableTable(table);
-            items.Add(new SectionItem(table.Title, table.Rows.Count));
+            switch (section)
+            {
+                case TableDefinition table:
+                    _pages[table.Title] = new FilterableTable(table);
+                    items.Add(new SectionItem(table.Title, table.Rows.Count));
+                    break;
+                case TreeTableDefinition tree:
+                    _pages[tree.Title] = new TreeTable(tree);
+                    var count = tree.Roots.SelectMany(r => r.SelfAndDescendants()).Count(r => !r.IsGroup);
+                    items.Add(new SectionItem(tree.Title, count));
+                    break;
+            }
         }
 
         _sections.ItemsSource = items;

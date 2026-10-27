@@ -5,7 +5,8 @@ namespace Pfr.Gui.Tables;
 /// <summary>Turns a parsed inventory into the tables shown in the GUI.</summary>
 public static class InventoryTables
 {
-    public static IReadOnlyList<TableDefinition> Build(GridInventory inv)
+    /// <summary>Each section is a flat <see cref="TableDefinition"/> or a <see cref="TreeTableDefinition"/>.</summary>
+    public static IReadOnlyList<object> Build(GridInventory inv)
     {
         var lookup = new Lookup(inv);
         return
@@ -21,6 +22,8 @@ public static class InventoryTables
     }
 
     private static string YesNo(bool value) => value ? "Yes" : "";
+
+    private static string Plural(int count, string noun) => $"{count:N0} {noun}{(count == 1 ? "" : "s")}";
 
     private static TableDefinition Members(GridInventory inv) => new(
         "Members",
@@ -57,35 +60,134 @@ public static class InventoryTables
             YesNo(v.RecursionEnabled), YesNo(v.DnssecValidationEnabled), YesNo(v.Disabled),
         ])).ToList());
 
-    private static TableDefinition Zones(GridInventory inv, Lookup lk) => new(
-        "Zones",
+    private static TreeTableDefinition Zones(GridInventory inv, Lookup lk)
+    {
+        TreeRow ZoneRow(DnsZone z) => new(
         [
-            new("Zone", Width: 260), new("View"), new("Type"), new("Primary"), new("Reverse"),
-            new("Grid primaries"), new("Grid secondaries"), new("Other name servers", Width: 260),
-            new("Records", ColumnKind.Number), new("DNSSEC"), new("Disabled"),
-        ],
-        inv.Zones.Select(z => new TableRow(
-        [
-            z.Fqdn, lk.ViewName(z.ViewKey), z.ZoneType, z.PrimaryType ?? "", YesNo(z.IsReverse),
+            z.Fqdn, z.ZoneType, z.PrimaryType ?? "",
             lk.MemberNames(z.GridPrimaryOids), lk.MemberNames(z.GridSecondaryOids),
             string.Join(", ", z.ExternalSecondaries.Concat(z.MicrosoftPrimaries).Concat(z.DelegatedServers)
                 .Select(ns => ns.Name).Distinct()),
             lk.RecordCount(z.Key).ToString(), YesNo(z.DnssecEnabled), YesNo(z.Disabled),
-        ])).ToList());
+        ]);
 
-    private static TableDefinition Networks(GridInventory inv, Lookup lk) => new(
-        "Networks",
-        [
-            new("Network", ColumnKind.Ip, 200), new("Kind"), new("IP version"), new("Network view"),
-            new("DHCP ranges", ColumnKind.Number), new("Comment", Width: 260), new("Disabled"),
-        ],
-        inv.Networks.Select(n => new TableRow(
-        [
-            n.Cidrs, n.IsContainer ? "Container" : "Network", n.IsIpv6 ? "IPv6" : "IPv4",
-            lk.NetworkViewName(n.NetworkViewId),
-            n.IsContainer ? "" : lk.RangeCount(n.Key).ToString(),
-            n.Comment ?? "", YesNo(n.Disabled),
-        ])).ToList());
+        var parents = InventoryHierarchy.ParentZones(inv.Zones);
+        var nodes = inv.Zones.ToDictionary(z => z.Key, ZoneRow, StringComparer.Ordinal);
+
+        // Nest each zone under its nearest ancestor zone (inv.Zones is already sorted by name).
+        foreach (var z in inv.Zones)
+        {
+            if (parents[z.Key] is { } parent) nodes[parent.Key].Add(nodes[z.Key]);
+        }
+
+        var roots = new List<TreeRow>();
+        foreach (var view in inv.DnsViews.OrderBy(v => v.Name, StringComparer.OrdinalIgnoreCase))
+        {
+            var viewZones = inv.Zones.Where(z => z.ViewKey == view.Key).ToList();
+            var viewRow = new TreeRow(
+            [
+                view.Name, $"View · {Plural(viewZones.Count, "zone")}", "", "", "", "",
+                viewZones.Sum(z => lk.RecordCount(z.Key)).ToString(), "", YesNo(view.Disabled),
+            ], isGroup: true) { IsExpanded = true };
+
+            // Top-level zones go under their TLD (or in-addr.arpa / ip6.arpa) group.
+            var tops = viewZones.Where(z => parents[z.Key] is null)
+                .GroupBy(z => InventoryHierarchy.TopLevelGroup(z.Fqdn))
+                .OrderBy(g => g.Key.EndsWith("arpa", StringComparison.Ordinal)) // reverse groups last
+                .ThenBy(g => g.Key, StringComparer.OrdinalIgnoreCase);
+
+            foreach (var group in tops)
+            {
+                // A zone that *is* the TLD (e.g. a zone named "com") stands in for the group.
+                if (group.Count() == 1 && string.Equals(group.First().Fqdn.TrimEnd('.'), group.Key,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    viewRow.Add(nodes[group.First().Key]);
+                    continue;
+                }
+
+                var members = group.SelectMany(z => nodes[z.Key].SelfAndDescendants()).Where(r => !r.IsGroup).ToList();
+                var label = group.Key switch
+                {
+                    "in-addr.arpa" => "IPv4 reverse",
+                    "ip6.arpa" => "IPv6 reverse",
+                    _ => "Top-level domain",
+                };
+                var groupRow = viewRow.Add(new TreeRow(
+                [
+                    group.Key, $"{label} · {Plural(members.Count, "zone")}", "", "", "", "",
+                    members.Sum(r => int.TryParse(r.Cells[6], out var n) ? n : 0).ToString(), "", "",
+                ], isGroup: true));
+                foreach (var z in group) groupRow.Add(nodes[z.Key]);
+            }
+
+            roots.Add(viewRow);
+        }
+
+        return new TreeTableDefinition(
+            "Zones",
+            [
+                new("Zone", Width: 320), new("Type", Width: 250), new("Primary"),
+                new("Grid primaries"), new("Grid secondaries"), new("Other name servers", Width: 240),
+                new("Records", ColumnKind.Number), new("DNSSEC"), new("Disabled"),
+            ],
+            roots, "zones");
+    }
+
+    private static TreeTableDefinition Networks(GridInventory inv, Lookup lk)
+    {
+        var parents = InventoryHierarchy.ParentNetworks(inv.Networks);
+
+        // DHCP range counts: a network shows its own; a container the total beneath it.
+        var rangeTotals = new Dictionary<IpNetwork, int>(ReferenceEqualityComparer.Instance);
+        foreach (var n in inv.Networks.Where(n => !n.IsContainer))
+        {
+            var count = lk.RangeCount(n.Key);
+            if (count == 0) continue;
+            for (IpNetwork? p = n; p is not null; p = parents[p])
+            {
+                rangeTotals[p] = rangeTotals.GetValueOrDefault(p) + count;
+            }
+        }
+
+        var nodes = new Dictionary<IpNetwork, TreeRow>(ReferenceEqualityComparer.Instance);
+        foreach (var n in inv.Networks)
+        {
+            var ranges = rangeTotals.GetValueOrDefault(n);
+            nodes[n] = new TreeRow(
+            [
+                n.Cidrs, n.IsContainer ? "Container" : "Network", n.IsIpv6 ? "IPv6" : "IPv4",
+                ranges == 0 ? "" : ranges.ToString(), n.Comment ?? "", YesNo(n.Disabled),
+            ]);
+        }
+
+        // inv.Networks is sorted by view and address, so children are added in order.
+        var roots = new List<TreeRow>();
+        foreach (var view in inv.Networks.GroupBy(n => n.NetworkViewId).OrderBy(g => g.Key))
+        {
+            var viewRanges = inv.DhcpRanges.Count(r => r.NetworkViewId == view.Key);
+            var viewRow = new TreeRow(
+            [
+                lk.NetworkViewName(view.Key) is { Length: > 0 } name ? name : $"Network view {view.Key}",
+                $"Network view · {Plural(view.Count(n => n.IsContainer), "container")}, {Plural(view.Count(n => !n.IsContainer), "network")}",
+                "", viewRanges == 0 ? "" : viewRanges.ToString(), "", "",
+            ], isGroup: true) { IsExpanded = true };
+
+            foreach (var n in view)
+            {
+                (parents[n] is { } parent ? nodes[parent] : viewRow).Add(nodes[n]);
+            }
+            roots.Add(viewRow);
+        }
+
+        return new TreeTableDefinition(
+            "Networks",
+            [
+                new("Network", ColumnKind.Ip, 320), new("Kind", Width: 330), new("IP version"),
+                new("DHCP ranges", ColumnKind.Number), new("Comment", Width: 260), new("Disabled"),
+            ],
+            roots, "networks and containers");
+    }
 
     private static TableDefinition DhcpRanges(GridInventory inv, Lookup lk) => new(
         "DHCP ranges",

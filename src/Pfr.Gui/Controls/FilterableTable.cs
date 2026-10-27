@@ -56,14 +56,8 @@ public sealed class FilterableTable : UserControl
             _grid.Columns.Add(new DataGridTemplateColumn
             {
                 Header = column.Header,
-                // Cells are read straight from the row: no reflection bindings.
-                CellTemplate = new FuncDataTemplate<TableRow>((row, _) => new TextBlock
-                {
-                    Text = row?.Cells[index] ?? "",
-                    VerticalAlignment = VerticalAlignment.Center,
-                    Margin = new Thickness(12, 0),
-                    TextTrimming = TextTrimming.CharacterEllipsis,
-                }),
+                // Bound to the row, so recycled rows show the right values while scrolling.
+                CellTemplate = new FuncDataTemplate<TableRow>((_, _) => TableCells.Text(index), supportsRecycling: true),
                 SortMemberPath = $"{nameof(TableRow.Cells)}[{index}]",
                 CustomSortComparer = new ColumnComparer(index, column.Kind),
                 CanUserSort = true,

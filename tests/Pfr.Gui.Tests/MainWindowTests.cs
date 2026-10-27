@@ -71,9 +71,19 @@ public class MainWindowTests
         {
             window.Inventory.SelectSection(section);
             Assert.Equal(section, window.Inventory.SelectedSection);
-            var table = Assert.IsType<FilterableTable>(window.Inventory.CurrentPage);
-            Assert.True(table.VisibleRowCount > 0, $"{section} has rows");
+            var rows = window.Inventory.CurrentPage switch
+            {
+                FilterableTable t => t.VisibleRowCount,
+                TreeTable t => t.VisibleRows.Count,
+                var other => throw new Xunit.Sdk.XunitException($"{section}: unexpected page {other}"),
+            };
+            Assert.True(rows > 0, $"{section} has rows");
             Snapshot(window, $"{index++:00}-{section.Replace(' ', '-').ToLowerInvariant()}");
+            if (window.Inventory.CurrentPage is TreeTable tree)
+            {
+                tree.SetAllExpanded(true);
+                Snapshot(window, $"{index - 1:00}b-{section.Replace(' ', '-').ToLowerInvariant()}-expanded");
+            }
         }
     }
 
