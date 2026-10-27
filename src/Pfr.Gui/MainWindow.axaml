@@ -2,14 +2,31 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         x:Class="Pfr.Gui.MainWindow"
         Title="PFR_MCP_V4"
-        Width="1100" Height="700"
-        MinWidth="800" MinHeight="500">
+        Width="1280" Height="800"
+        MinWidth="900" MinHeight="560"
+        WindowStartupLocation="CenterScreen">
+  <Window.Resources>
+    <!-- Fluent's default tab header size (24) is too large for module tabs. -->
+    <x:Double x:Key="TabItemHeaderFontSize">16</x:Double>
+  </Window.Resources>
   <DockPanel>
+    <!-- Header -->
     <Border DockPanel.Dock="Top" Padding="16,10"
             Background="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}">
-      <TextBlock x:Name="BannerText" FontSize="16" FontWeight="SemiBold" />
+      <Grid ColumnDefinitions="Auto,*,Auto">
+        <TextBlock x:Name="BannerText" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" />
+        <TextBlock x:Name="LoadedText" Grid.Column="1" Margin="24,0" VerticalAlignment="Center"
+                   Opacity="0.75" TextTrimming="CharacterEllipsis" />
+        <Button x:Name="OpenButton" Grid.Column="2" Content="Open backup…" Classes="accent" />
+      </Grid>
     </Border>
 
-    <TabControl x:Name="ModuleTabs" Margin="8" />
+    <!-- Status bar -->
+    <Border DockPanel.Dock="Bottom" Padding="16,4"
+            Background="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}">
+      <TextBlock x:Name="StatusText" FontSize="12" Opacity="0.8" Text="Ready" />
+    </Border>
+
+    <TabControl x:Name="ModuleTabs" Margin="4,0,4,0" />
   </DockPanel>
 </Window>

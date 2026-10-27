@@ -8,11 +8,22 @@ Designed to run on **air-gapped** machines as self-contained executables with no
 
 See **[REQUIREMENTS.md](REQUIREMENTS.md)** for the full specification and open decisions.
 
-> Status: early development. The NIOS backup parser and `pfr inspect` work; the GUI is still a shell.
+> Status: early development. The NIOS backup parser, `pfr inspect`, and the GUI's Inventory module work.
 
 ## Quick start
 
-Summarize a grid backup:
+Open the desktop app and click **Open backup…** (or pass the file on the command line):
+
+```bash
+dotnet run --project src/Pfr.Gui
+dotnet run --project src/Pfr.Gui -- path/to/grid-backup.bak
+```
+
+The Inventory module shows an overview plus searchable, sortable tables of members, DNS views,
+zones, networks, DHCP ranges, DHCP failover and DNS records. Search matches every word you type
+across all columns; rows can be multi-selected and copied (Ctrl+C) with headers.
+
+Summarize a grid backup from the command line:
 
 ```bash
 dotnet run --project src/Pfr.Cli -- inspect path/to/grid-backup.bak
@@ -32,6 +43,7 @@ src/
   Pfr.Gui/     Avalonia desktop app -> executable "PFR"
 tests/
   Pfr.Core.Tests/   xUnit tests for the core
+  Pfr.Gui.Tests/    Headless Avalonia UI tests (set PFR_SCREENSHOT_DIR to save screenshots)
 ```
 
 ## Prerequisites (development machine only)

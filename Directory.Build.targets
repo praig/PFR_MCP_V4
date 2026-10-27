@@ -1,0 +1,9 @@
+<Project>
+  <!--
+    Avalonia.BuildServices (pulled in by Avalonia) reports anonymous build
+    statistics while compiling. This project sends nothing anywhere, including
+    at build time, so the target is replaced with an empty one.
+    (Setting the AVALONIA_TELEMETRY_OPTOUT=1 environment variable also works.)
+  -->
+  <Target Name="AvaloniaStats" />
+</Project>

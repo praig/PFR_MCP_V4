@@ -12,7 +12,14 @@ public partial class App : Application
     {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
-            desktop.MainWindow = new MainWindow();
+            var window = new MainWindow();
+            desktop.MainWindow = window;
+
+            // "PFR <backup file>" opens that backup at startup.
+            if (desktop.Args is [var path, ..] && File.Exists(path))
+            {
+                window.Opened += async (_, _) => await window.LoadBackupAsync(path);
+            }
         }
 
         base.OnFrameworkInitializationCompleted();
