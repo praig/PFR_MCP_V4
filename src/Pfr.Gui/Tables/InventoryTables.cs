@@ -62,17 +62,55 @@ public static class InventoryTables
 
     private static TreeTableDefinition Zones(GridInventory inv, Lookup lk)
     {
-        TreeRow ZoneRow(DnsZone z) => new(
-        [
-            z.Fqdn, z.ZoneType, z.PrimaryType ?? "",
-            lk.MemberNames(z.GridPrimaryOids), lk.MemberNames(z.GridSecondaryOids),
-            string.Join(", ", z.ExternalSecondaries.Concat(z.MicrosoftPrimaries).Concat(z.DelegatedServers)
-                .Select(ns => ns.Name).Distinct()),
-            lk.RecordCount(z.Key).ToString(), YesNo(z.DnssecEnabled), YesNo(z.Disabled),
-        ]);
+        int Records(IEnumerable<DnsZone> zones) => zones.Sum(z => lk.RecordCount(z.Key));
+        const string blank = "";
 
+        var roots = ZoneHierarchy(inv,
+            zoneRow: z => new TreeRow(
+            [
+                z.Fqdn, z.ZoneType, z.PrimaryType ?? "",
+                lk.MemberNames(z.GridPrimaryOids), lk.MemberNames(z.GridSecondaryOids),
+                string.Join(", ", z.ExternalSecondaries.Concat(z.MicrosoftPrimaries).Concat(z.DelegatedServers)
+                    .Select(ns => ns.Name).Distinct()),
+                lk.RecordCount(z.Key).ToString(), YesNo(z.DnssecEnabled), YesNo(z.Disabled),
+            ]),
+            viewRow: (v, zones) => new TreeRow(
+            [
+                v.Name, $"View · {Plural(zones.Count, "zone")}", blank, blank, blank, blank,
+                Records(zones).ToString(), blank, YesNo(v.Disabled),
+            ], isGroup: true),
+            groupRow: (name, label, zones) => new TreeRow(
+            [
+                name, $"{label} · {Plural(zones.Count, "zone")}", blank, blank, blank, blank,
+                Records(zones).ToString(), blank, blank,
+            ], isGroup: true),
+            out _);
+
+        return new TreeTableDefinition(
+            "Zones",
+            [
+                new("Zone", Width: 320), new("Type", Width: 250), new("Primary"),
+                new("Grid primaries"), new("Grid secondaries"), new("Other name servers", Width: 240),
+                new("Records", ColumnKind.Number), new("DNSSEC"), new("Disabled"),
+            ],
+            roots, "zones");
+    }
+
+    /// <summary>
+    /// The shared DNS tree: view → top-level domain (or IPv4/IPv6 reverse) → zone → sub-zone.
+    /// Callers supply the row for each level; <paramref name="zoneNodes"/> returns each
+    /// zone's row by zone key so callers can hang more rows (e.g. records) under it.
+    /// </summary>
+    private static List<TreeRow> ZoneHierarchy(
+        GridInventory inv,
+        Func<DnsZone, TreeRow> zoneRow,
+        Func<DnsView, List<DnsZone>, TreeRow> viewRow,
+        Func<string, string, List<DnsZone>, TreeRow> groupRow,
+        out Dictionary<string, TreeRow> zoneNodes)
+    {
         var parents = InventoryHierarchy.ParentZones(inv.Zones);
-        var nodes = inv.Zones.ToDictionary(z => z.Key, ZoneRow, StringComparer.Ordinal);
+        var nodes = inv.Zones.ToDictionary(z => z.Key, zoneRow, StringComparer.Ordinal);
+        zoneNodes = nodes;
 
         // Nest each zone under its nearest ancestor zone (inv.Zones is already sorted by name).
         foreach (var z in inv.Zones)
@@ -84,11 +122,8 @@ public static class InventoryTables
         foreach (var view in inv.DnsViews.OrderBy(v => v.Name, StringComparer.OrdinalIgnoreCase))
         {
             var viewZones = inv.Zones.Where(z => z.ViewKey == view.Key).ToList();
-            var viewRow = new TreeRow(
-            [
-                view.Name, $"View · {Plural(viewZones.Count, "zone")}", "", "", "", "",
-                viewZones.Sum(z => lk.RecordCount(z.Key)).ToString(), "", YesNo(view.Disabled),
-            ], isGroup: true) { IsExpanded = true };
+            var vRow = viewRow(view, viewZones);
+            vRow.IsExpanded = true;
 
             // Top-level zones go under their TLD (or in-addr.arpa / ip6.arpa) group.
             var tops = viewZones.Where(z => parents[z.Key] is null)
@@ -102,36 +137,26 @@ public static class InventoryTables
                 if (group.Count() == 1 && string.Equals(group.First().Fqdn.TrimEnd('.'), group.Key,
                         StringComparison.OrdinalIgnoreCase))
                 {
-                    viewRow.Add(nodes[group.First().Key]);
+                    vRow.Add(nodes[group.First().Key]);
                     continue;
                 }
 
-                var members = group.SelectMany(z => nodes[z.Key].SelfAndDescendants()).Where(r => !r.IsGroup).ToList();
                 var label = group.Key switch
                 {
                     "in-addr.arpa" => "IPv4 reverse",
                     "ip6.arpa" => "IPv6 reverse",
                     _ => "Top-level domain",
                 };
-                var groupRow = viewRow.Add(new TreeRow(
-                [
-                    group.Key, $"{label} · {Plural(members.Count, "zone")}", "", "", "", "",
-                    members.Sum(r => int.TryParse(r.Cells[6], out var n) ? n : 0).ToString(), "", "",
-                ], isGroup: true));
-                foreach (var z in group) groupRow.Add(nodes[z.Key]);
+                // Every zone in this view under the same TLD, including nested ones.
+                var groupZones = viewZones
+                    .Where(z => InventoryHierarchy.TopLevelGroup(z.Fqdn) == group.Key).ToList();
+                var gRow = vRow.Add(groupRow(group.Key, label, groupZones));
+                foreach (var z in group) gRow.Add(nodes[z.Key]);
             }
 
-            roots.Add(viewRow);
+            roots.Add(vRow);
         }
-
-        return new TreeTableDefinition(
-            "Zones",
-            [
-                new("Zone", Width: 320), new("Type", Width: 250), new("Primary"),
-                new("Grid primaries"), new("Grid secondaries"), new("Other name servers", Width: 240),
-                new("Records", ColumnKind.Number), new("DNSSEC"), new("Disabled"),
-            ],
-            roots, "zones");
+        return roots;
     }
 
     private static TreeTableDefinition Networks(GridInventory inv, Lookup lk)
@@ -262,16 +287,41 @@ public static class InventoryTables
             inv.DhcpRanges.Count(r => r.FailoverName == f.Name && r.IsMicrosoft == f.IsMicrosoft).ToString(),
         ])).ToList());
 
-    private static TableDefinition Records(GridInventory inv, Lookup lk) => new(
-        "DNS records",
-        [
-            new("Name", Width: 280), new("Type"), new("Value", Width: 280), new("Zone", Width: 220),
-            new("View"), new("Disabled"),
-        ],
-        inv.Records.Select(r => new TableRow(
-        [
-            r.Fqdn, r.Type.ToString(), r.Value, lk.ZoneFqdn(r.ZoneKey), lk.ViewName(r.ViewKey), YesNo(r.Disabled),
-        ])).ToList());
+    private static TreeTableDefinition Records(GridInventory inv, Lookup lk)
+    {
+        const string blank = "";
+        int Count(IEnumerable<DnsZone> zones) => zones.Sum(z => lk.RecordCount(z.Key));
+
+        var roots = ZoneHierarchy(inv,
+            zoneRow: z => new TreeRow(
+                [$"{z.Fqdn}   ({Plural(lk.RecordCount(z.Key), "record")})", z.ZoneType, blank, blank, YesNo(z.Disabled)],
+                isGroup: true),
+            viewRow: (v, zones) => new TreeRow(
+                [$"{v.Name}   ({Plural(Count(zones), "record")})", "View", blank, blank, YesNo(v.Disabled)],
+                isGroup: true),
+            groupRow: (name, label, zones) => new TreeRow(
+                [$"{name}   ({Plural(Count(zones), "record")})", label, blank, blank, blank],
+                isGroup: true),
+            out var zoneNodes);
+
+        // Records sit under their zone, after any sub-zones; inv.Records is sorted by name.
+        foreach (var r in inv.Records)
+        {
+            if (!zoneNodes.TryGetValue(r.ZoneKey, out var zoneRow)) continue;
+            zoneRow.Add(new TreeRow(
+            [
+                r.Name.Length == 0 ? "@" : r.Name, r.Type.ToString(), r.Value, r.Fqdn, YesNo(r.Disabled),
+            ]));
+        }
+
+        return new TreeTableDefinition(
+            "DNS records",
+            [
+                new("Name", Width: 340), new("Type", Width: 150), new("Value", Width: 300),
+                new("FQDN", Width: 300), new("Disabled"),
+            ],
+            roots, "records");
+    }
 
     /// <summary>"10.0.0.0/24/0" → "10.0.0.0/24".</summary>
     private static string StripView(string networkKey)

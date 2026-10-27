@@ -50,6 +50,49 @@ public class TreeTableTests
     }
 
     [Fact]
+    public void Records_sit_under_their_zone_after_sub_zones()
+    {
+        var records = Section("DNS records");
+
+        Assert.Equal(["External", "Internal"], records.Roots.Select(r => r.Cells[0].Split(' ')[0]));
+        var internalView = records.Roots.Single(r => r.Cells[0].StartsWith("Internal"));
+        Assert.Contains("(6 records)", internalView.Cells[0]); // 5 in lab.test + 1 PTR
+
+        var lab = internalView.Children.Single(c => c.Cells[0].StartsWith("test")).Children.Single();
+        Assert.StartsWith("lab.test", lab.Cells[0]);
+        Assert.True(lab.IsGroup);
+
+        // Sub-zone first, then the zone's own records by name ("@" is the apex).
+        Assert.StartsWith("aws.lab.test", lab.Children[0].Cells[0]);
+        var own = lab.Children.Skip(1).ToList();
+        Assert.All(own, r => Assert.False(r.IsGroup));
+        Assert.Contains(own, r => r.Cells[0] == "@" && r.Cells[1] == "A" && r.Cells[3] == "lab.test");
+        Assert.Contains(own, r => r.Cells[0] == "www" && r.Cells[2] == "10.0.0.10" && r.Cells[3] == "www.lab.test");
+        Assert.Contains(own, r => r.Cells[0] == "server1" && r.Cells[1] == "Host");
+        Assert.Contains(own, r => r.Cells[0] == "old" && r.Cells[4] == "Yes");
+
+        var reverse = internalView.Children.Single(c => c.Cells[0].StartsWith("in-addr.arpa"));
+        var ptr = Assert.Single(reverse.Children.Single().Children);
+        Assert.Equal(["10", "PTR", "www.lab.test"], ptr.Cells.Take(3));
+
+        // The AAAA record is in the External view's copy of lab.test.
+        var external = records.Roots.Single(r => r.Cells[0].StartsWith("External"));
+        Assert.Contains(external.SelfAndDescendants(), r => r.Cells[1] == "AAAA");
+    }
+
+    [AvaloniaFact]
+    public void Records_tree_counts_only_records()
+    {
+        var table = new TreeTable(Section("DNS records"));
+        Assert.Equal(7, Section("DNS records").Roots.SelectMany(r => r.SelfAndDescendants()).Count(r => !r.IsGroup));
+
+        table.SetAllExpanded(false);
+        table.ApplyFilter("server1");
+        Assert.Equal("server1", table.VisibleRows.Last().Cells[0]);
+        Assert.StartsWith("lab.test", table.VisibleRows[^2].Cells[0]);
+    }
+
+    [Fact]
     public void Dhcp_tree_is_network_view_then_network_then_ranges()
     {
         var dhcp = Section("DHCP ranges");
