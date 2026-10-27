@@ -84,6 +84,10 @@ public sealed class ColumnComparer(int index, ColumnKind kind) : IComparer
 
     private static (string Address, int Length) Split(string value)
     {
+        // Ranges are shown as "start – end"; sort by the start address.
+        var space = value.IndexOf(' ');
+        if (space > 0) value = value[..space];
+
         var slash = value.IndexOf('/');
         return slash < 0
             ? (value, -1)

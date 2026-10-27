@@ -49,6 +49,43 @@ public class TreeTableTests
         Assert.Contains(view.Children, c => c.Cells[0] == "2001:db8::/64");
     }
 
+    [Fact]
+    public void Dhcp_tree_is_network_view_then_network_then_ranges()
+    {
+        var dhcp = Section("DHCP ranges");
+
+        var view = Assert.Single(dhcp.Roots);
+        Assert.StartsWith("default", view.Cells[0]);
+        Assert.Contains("2 networks, 3 ranges", view.Cells[0]);
+        Assert.True(view.IsExpanded);
+
+        // IPv4 networks before IPv6.
+        Assert.Equal(["10.0.0.0/24", "2001:db8::/64"], view.Children.Select(c => c.Cells[0].Split(' ')[0]));
+
+        var v4 = view.Children[0];
+        Assert.True(v4.IsGroup);
+        Assert.Equal("Infrastructure", v4.Cells[4]); // network comment
+        Assert.Equal(
+            ["10.0.0.50 – 10.0.0.59", "10.0.0.100 – 10.0.0.199"],
+            v4.Children.Select(r => r.Cells[0]));
+        Assert.Equal("ns1.lab.test", v4.Children[0].Cells[1]); // served by member
+        Assert.Equal("gm-gmc", v4.Children[1].Cells[1]);       // served by failover
+        Assert.All(v4.Children, r => Assert.False(r.IsGroup));
+    }
+
+    [AvaloniaFact]
+    public void Dhcp_tree_counts_and_sorts_ranges()
+    {
+        var table = new TreeTable(Section("DHCP ranges"));
+        table.SetAllExpanded(true);
+        Assert.Equal(3, table.VisibleRows.Count(r => !r.IsGroup));
+
+        table.SortBy(0); // ascending by start address
+        table.SortBy(0); // descending
+        var v4 = table.VisibleRows.Single(r => r.Cells[0].StartsWith("10.0.0.0/24"));
+        Assert.Equal(["10.0.0.100 – 10.0.0.199", "10.0.0.50 – 10.0.0.59"], v4.Children.Select(r => r.Cells[0]));
+    }
+
     [AvaloniaFact]
     public void Twisties_expand_and_collapse()
     {

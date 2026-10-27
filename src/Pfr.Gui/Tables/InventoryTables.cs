@@ -189,24 +189,63 @@ public static class InventoryTables
             roots, "networks and containers");
     }
 
-    private static TableDefinition DhcpRanges(GridInventory inv, Lookup lk) => new(
-        "DHCP ranges",
-        [
-            new("Start", ColumnKind.Ip, 170), new("End", ColumnKind.Ip, 170), new("Network", ColumnKind.Ip, 180),
-            new("Network view"), new("Served by", Width: 220), new("Association"), new("Name"),
-            new("Comment", Width: 200), new("Disabled"),
-        ],
-        inv.DhcpRanges.Select(r => new TableRow(
-        [
-            r.StartAddress, r.EndAddress, StripView(r.NetworkKey), lk.NetworkViewName(r.NetworkViewId),
-            r.AssociationType switch
+    private static TreeTableDefinition DhcpRanges(GridInventory inv, Lookup lk)
+    {
+        string ServedBy(DhcpRange r) => r.AssociationType switch
+        {
+            "Member" => lk.MemberName(r.MemberOid),
+            "Failover" or "MsFailover" => r.FailoverName ?? "",
+            _ => r.IsMicrosoft ? "Microsoft DHCP" : "",
+        };
+
+        var networks = inv.Networks.Where(n => !n.IsContainer)
+            .ToDictionary(n => n.Key, StringComparer.Ordinal);
+
+        var roots = new List<TreeRow>();
+        foreach (var view in inv.DhcpRanges.GroupBy(r => r.NetworkViewId).OrderBy(g => g.Key))
+        {
+            var byNetwork = view.GroupBy(r => r.NetworkKey).ToList();
+            var viewRow = new TreeRow(
+            [
+                $"{(lk.NetworkViewName(view.Key) is { Length: > 0 } name ? name : $"Network view {view.Key}")}"
+                    + $"   ({Plural(byNetwork.Count, "network")}, {Plural(view.Count(), "range")})",
+                "", "", "", "", "",
+            ], isGroup: true) { IsExpanded = true };
+
+            // Networks in address order; ranges in start-address order (inv.DhcpRanges is sorted).
+            foreach (var net in byNetwork.OrderBy(g => g.Key.Contains(':')).ThenBy(g => g.Key,
+                         Comparer<string>.Create((a, b) => new ColumnComparer(0, ColumnKind.Ip)
+                             .CompareCells([StripView(a)], [StripView(b)]))))
             {
-                "Member" => lk.MemberName(r.MemberOid),
-                "Failover" or "MsFailover" => r.FailoverName ?? "",
-                _ => r.IsMicrosoft ? "Microsoft DHCP" : "",
-            },
-            r.AssociationType, r.Name ?? "", r.Comment ?? "", YesNo(r.Disabled),
-        ])).ToList());
+                networks.TryGetValue(net.Key, out var network);
+                var netRow = viewRow.Add(new TreeRow(
+                [
+                    $"{StripView(net.Key)}   ({Plural(net.Count(), "range")})",
+                    "", "", "", network?.Comment ?? "", "",
+                ], isGroup: true));
+
+                foreach (var r in net)
+                {
+                    var span = r.StartAddress.Length == 0 && r.EndAddress.Length == 0
+                        ? "(prefix delegation)"
+                        : $"{r.StartAddress} – {r.EndAddress}";
+                    netRow.Add(new TreeRow(
+                    [
+                        span, ServedBy(r), r.AssociationType, r.Name ?? "", r.Comment ?? "", YesNo(r.Disabled),
+                    ]));
+                }
+            }
+            roots.Add(viewRow);
+        }
+
+        return new TreeTableDefinition(
+            "DHCP ranges",
+            [
+                new("Range", ColumnKind.Ip, 360), new("Served by", Width: 240), new("Association"),
+                new("Name"), new("Comment", Width: 240), new("Disabled"),
+            ],
+            roots, "ranges");
+    }
 
     private static TableDefinition Failover(GridInventory inv, Lookup lk) => new(
         "DHCP failover",
