@@ -107,7 +107,13 @@ internal static class OneDbFixture
             ("address", "255.255.255.255")),
 
         // Records
-        O("dns.bind_a", ("zone", "._default.test.lab"), ("name", "www"), ("address", "10.0.0.10")),
+        // TTLs: grid default 28800; Internal lab.test overrides to 3600; External lab.test inherits.
+        O("dns.cluster_dns_properties", ("default_ttl", "28800"), ("negative_ttl", "900")),
+        O("dns.bind_soa", ("zone", "._default.test.lab"), ("ttl_option", "1"), ("default_ttl", "3600"), ("ttl", "3600")),
+        O("dns.bind_soa", ("zone", ".1.test.lab"), ("ttl_option", "0"), ("default_ttl", "28800"), ("ttl", "28800")),
+
+        O("dns.bind_a", ("zone", "._default.test.lab"), ("name", "www"), ("address", "10.0.0.10"),
+            ("ttl_option", "1"), ("ttl", "300")),
         O("dns.bind_a", ("zone", "._default.test.lab"), ("name", ""), ("address", "10.0.0.11")),
         O("dns.bind_aaaa", ("zone", ".1.test.lab"), ("name", "www"), ("address", "2001:db8::10")),
         O("dns.bind_cname", ("zone", "._default.test.lab"), ("name", "web"), ("canonical_name", "www.lab.test")),
@@ -115,7 +121,7 @@ internal static class OneDbFixture
             ("disabled", "true")),
         O("dns.bind_cname", ("zone", "._default.blacklist"), ("name", "com.bad"), ("canonical_name", "")),
         O("dns.bind_ptr", ("zone", "._default.arpa.in-addr.10.0.0"), ("name", "10"), ("dname", "www.lab.test")),
-        O("dns.host", ("zone", "._default.test.lab"), ("name", "server1")),
+        O("dns.host", ("zone", "._default.test.lab"), ("name", "server1"), ("ttl_option", "1"), ("ttl", "600")),
         // Host: two IPv4 (one linked to the 10.0.0 reverse zone) and one IPv6 address, plus an alias.
         O("dns.host_address", ("host", "._default.test.lab.server1"), ("address", "10.0.0.20"), ("is_ipv4", "true"),
             ("reverse_zone", "._default.arpa.in-addr.10.0.0")),
@@ -130,9 +136,11 @@ internal static class OneDbFixture
         O("dns.bind_mx", ("zone", "._default.test.lab"), ("name", ""), ("priority", "10"), ("mx", "mail.lab.test")),
         O("dns.bind_srv", ("zone", "._default.test.lab"), ("name", "_sip._tcp"), ("priority", "10"), ("weight", "20"),
             ("port", "5060"), ("target", "sip.lab.test")),
-        O("dns.bind_txt", ("zone", "._default.test.lab"), ("name", ""), ("txt_string", "\"v=spf1 -all\"")),
+        O("dns.bind_txt", ("zone", "._default.test.lab"), ("name", ""), ("txt_string", "\"v=spf1 -all\""),
+            ("ttl_option", "0"), ("ttl", "999")), // inherits: a stale ttl with option 0 is ignored
         O("dns.bind_naptr", ("zone", "._default.test.lab"), ("name", "voip"), ("order", "90"), ("preference", "50"),
-            ("flag", "S"), ("services", "SIP+D2T"), ("regexp", ""), ("replacement", "_sip._tcp.lab.test")),
+            ("flag", "S"), ("services", "SIP+D2T"), ("regexp", ""), ("replacement", "_sip._tcp.lab.test"),
+            ("ttl", "7200")), // NAPTR carries a ttl without ttl_option
         O("dns.bind_caa", ("zone", "._default.test.lab"), ("name", ""), ("ca_flag", "0"), ("ca_tag", "issue"),
             ("ca_value", "letsencrypt.org"), ("ca_value_hash", "abc123")),
         O("dns.bind_ns", ("zone", "._default.test.lab"), ("name", ""), ("dname", "gm.lab.test"), ("auto_created", "true")),

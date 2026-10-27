@@ -70,10 +70,18 @@ public sealed class ColumnComparer(int index, ColumnKind kind) : IComparer
 
         return kind switch
         {
-            ColumnKind.Number when int.TryParse(a, out var ia) && int.TryParse(b, out var ib) => ia.CompareTo(ib),
+            ColumnKind.Number when LeadingNumber(a) is { } ia && LeadingNumber(b) is { } ib => ia.CompareTo(ib),
             ColumnKind.Ip => ComparePrefix(a, b),
             _ => string.Compare(a, b, StringComparison.OrdinalIgnoreCase),
         };
+    }
+
+    /// <summary>"28800 (8h)" → 28800; "12" → 12; non-numeric → null.</summary>
+    private static long? LeadingNumber(string value)
+    {
+        var end = 0;
+        while (end < value.Length && char.IsAsciiDigit(value[end])) end++;
+        return end > 0 && long.TryParse(value.AsSpan(0, end), out var n) ? n : null;
     }
 
     private static int ComparePrefix(string a, string b)

@@ -43,6 +43,8 @@ public static class BackupParser
         "dns.bind_txt",
         "dns.bind_naptr",
         "dns.bind_caa",
+        "dns.bind_soa",
+        "dns.cluster_dns_properties",
     ];
 
     /// <summary>Zone types shown to users; internal types (View, Dummy, SharedRecordGroup…) are skipped.</summary>
@@ -198,6 +200,21 @@ public static class BackupParser
             };
         }
 
+        // TTLs: the grid default applies unless the zone's SOA overrides it (ttl_option 1).
+        inv.DefaultTtl = byType["dns.cluster_dns_properties"].Select(o => o.GetInt("default_ttl")).FirstOrDefault(t => t is not null);
+        foreach (var z in zones.Values)
+        {
+            // Only zones the grid answers for have a default TTL; delegated/forward/stub zones don't.
+            z.DefaultTtl = new Ttl(ServesRecords(z) ? inv.DefaultTtl : null, TtlSource.Grid);
+        }
+        foreach (var soa in byType["dns.bind_soa"])
+        {
+            if (!zones.TryGetValue(soa.GetOrEmpty("zone"), out var z) || !ServesRecords(z)) continue;
+            z.DefaultTtl = soa.Get("ttl_option") == "1"
+                ? new Ttl(soa.GetInt("default_ttl"), TtlSource.Zone)
+                : new Ttl(inv.DefaultTtl ?? soa.GetInt("default_ttl"), TtlSource.Grid);
+        }
+
         void ForZone(string type, Action<DnsZone, OneDbObject> apply)
         {
             foreach (var o in byType[type])
@@ -227,6 +244,8 @@ public static class BackupParser
         inv.Zones.AddRange(zones.Values.OrderBy(z => z.ViewKey, StringComparer.Ordinal)
             .ThenBy(z => z.Fqdn, StringComparer.OrdinalIgnoreCase));
     }
+
+    private static bool ServesRecords(DnsZone z) => z.ZoneType is "Authoritative" or "ResponsePolicy";
 
     /// <summary>Zone keys are the parent key plus the name; ".." marks a top-level (view) object.</summary>
     internal static string ZoneKey(string parent, string name) =>
@@ -333,7 +352,7 @@ public static class BackupParser
         var zones = inv.Zones.ToDictionary(z => z.Key, StringComparer.Ordinal);
 
         void AddRecord(string zoneKey, string name, DnsRecordType type, string value, bool disabled,
-            string? hostName = null)
+            string? hostName = null, Ttl? ttl = null)
         {
             if (!zones.TryGetValue(zoneKey, out var zone)) return; // e.g. RPZ/blacklist internals, non-DNS hosts
             inv.Records.Add(new DnsRecord
@@ -346,11 +365,13 @@ public static class BackupParser
                 Value = value,
                 Disabled = disabled,
                 HostName = hostName,
+                Ttl = ttl ?? zone.DefaultTtl, // no TTL of its own: inherit the zone's
             });
         }
 
         void Add(OneDbObject o, DnsRecordType type, string value) =>
-            AddRecord(o.GetOrEmpty("zone"), o.GetOrEmpty("name"), type, value, o.GetBool("disabled"));
+            AddRecord(o.GetOrEmpty("zone"), o.GetOrEmpty("name"), type, value, o.GetBool("disabled"),
+                ttl: OwnTtl(o, TtlSource.Record));
 
         string Quote(string? s) => $"\"{s ?? ""}\"";
 
@@ -373,15 +394,18 @@ public static class BackupParser
 
         // NS: NIOS's own NS records are auto-generated, so only delegations are listed,
         // under the delegated zone.
+        // Delegation NS records are served from the parent zone, so they take its default TTL.
+        var parentZones = InventoryHierarchy.ParentZones(inv.Zones);
         foreach (var z in inv.Zones.Where(z => z.ZoneType == "Delegated"))
         {
+            var ttl = parentZones[z.Key]?.DefaultTtl ?? new Ttl(inv.DefaultTtl, TtlSource.Grid);
             foreach (var ns in z.DelegatedServers)
             {
-                AddRecord(z.Key, "", DnsRecordType.NS, ns.Name, z.Disabled);
+                AddRecord(z.Key, "", DnsRecordType.NS, ns.Name, z.Disabled, ttl: ttl);
             }
         }
 
-        AddHostRecords(inv, byType, zones, AddRecord);
+        AddHostRecords(inv, byType, zones, (zk, n, t, v, d, h, ttl) => AddRecord(zk, n, t, v, d, h, ttl));
 
         inv.Records.Sort((a, b) =>
         {
@@ -402,9 +426,9 @@ public static class BackupParser
         GridInventory inv,
         Dictionary<string, List<OneDbObject>> byType,
         Dictionary<string, DnsZone> zones,
-        Action<string, string, DnsRecordType, string, bool, string?> addRecord)
+        Action<string, string, DnsRecordType, string, bool, string?, Ttl?> addRecord)
     {
-        var hosts = new Dictionary<string, (string Fqdn, bool Disabled)>(StringComparer.Ordinal);
+        var hosts = new Dictionary<string, (string Fqdn, bool Disabled, Ttl? Ttl)>(StringComparer.Ordinal);
         var addressesByHost = byType["dns.host_address"].ToLookup(a => a.GetOrEmpty("host"), StringComparer.Ordinal);
         foreach (var h in byType["dns.host"])
         {
@@ -412,13 +436,15 @@ public static class BackupParser
             if (!zones.TryGetValue(zoneKey, out var zone)) continue; // non-DNS host (IPAM only)
             var name = h.GetOrEmpty("name");
             var fqdn = name.Length == 0 ? zone.Fqdn : $"{name}.{zone.Fqdn}";
-            hosts[$"{zoneKey}.{name}"] = (fqdn, h.GetBool("disabled"));
+            // A host may set its own TTL; its records use it, otherwise they inherit their zone's.
+            var hostTtl = OwnTtl(h, TtlSource.Host);
+            hosts[$"{zoneKey}.{name}"] = (fqdn, h.GetBool("disabled"), hostTtl);
 
             foreach (var a in addressesByHost[$"{zoneKey}.{name}"])
             {
                 var address = a.GetOrEmpty("address");
                 var isV4 = a.Get("is_ipv4") is not "false";
-                addRecord(zoneKey, name, isV4 ? DnsRecordType.A : DnsRecordType.AAAA, address, h.GetBool("disabled"), fqdn);
+                addRecord(zoneKey, name, isV4 ? DnsRecordType.A : DnsRecordType.AAAA, address, h.GetBool("disabled"), fqdn, hostTtl);
 
                 // PTR in the reverse zone NIOS links the address to, if the grid hosts it.
                 if (a.Get("reverse_zone") is { Length: > 0 } reverseKey
@@ -426,7 +452,7 @@ public static class BackupParser
                     && ReverseName(address) is { } reverse
                     && RelativeTo(reverse, reverseZone.Fqdn) is { } ptrName)
                 {
-                    addRecord(reverseKey, ptrName, DnsRecordType.PTR, fqdn, h.GetBool("disabled"), fqdn);
+                    addRecord(reverseKey, ptrName, DnsRecordType.PTR, fqdn, h.GetBool("disabled"), fqdn, hostTtl);
                 }
             }
         }
@@ -436,8 +462,19 @@ public static class BackupParser
         {
             if (!hosts.TryGetValue(alias.GetOrEmpty("host"), out var host)) continue;
             addRecord(alias.GetOrEmpty("zone"), alias.GetOrEmpty("alias"), DnsRecordType.CNAME,
-                host.Fqdn, host.Disabled, host.Fqdn);
+                host.Fqdn, host.Disabled, host.Fqdn, host.Ttl);
         }
+    }
+
+    /// <summary>
+    /// The object's own TTL, or null when it inherits. ttl_option 1 means "set here";
+    /// some record types (NAPTR) omit ttl_option and just carry a ttl.
+    /// </summary>
+    internal static Ttl? OwnTtl(OneDbObject o, TtlSource source)
+    {
+        var option = o.Get("ttl_option");
+        var own = option == "1" || (option is null && o.GetInt("ttl") is not null);
+        return own ? new Ttl(o.GetInt("ttl"), source) : null;
     }
 
     /// <summary>"10.0.0.20" → "20.0.0.10.in-addr.arpa"; IPv6 → nibble form under ip6.arpa.</summary>

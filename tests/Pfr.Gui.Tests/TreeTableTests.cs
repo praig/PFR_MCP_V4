@@ -69,21 +69,43 @@ public class TreeTableTests
 
         var own = lab.Children.Skip(1).ToList();
         Assert.All(own, r => Assert.False(r.IsGroup));
-        Assert.Contains(own, r => r.Cells[0] == "@" && r.Cells[1] == "A" && r.Cells[3] == "" && r.Cells[4] == "lab.test");
+        Assert.Contains(own, r => r.Cells[0] == "@" && r.Cells[1] == "A" && r.Cells[5] == "" && r.Cells[6] == "lab.test");
         Assert.Contains(own, r => r.Cells[0] == "@" && r.Cells[1] == "MX" && r.Cells[2] == "10 mail.lab.test");
-        Assert.Contains(own, r => r.Cells[0] == "old" && r.Cells[5] == "Yes");
+        Assert.Contains(own, r => r.Cells[0] == "old" && r.Cells[7] == "Yes");
 
         // Host object records: real types, flagged in the Host column.
         var server1 = own.Where(r => r.Cells[0] == "server1").ToList();
         Assert.Equal(["A", "A", "AAAA"], server1.Select(r => r.Cells[1]));
-        Assert.All(server1, r => Assert.Equal("Yes", r.Cells[3]));
-        Assert.Contains(own, r => r.Cells[0] == "files" && r.Cells[1] == "CNAME" && r.Cells[3] == "Yes");
+        Assert.All(server1, r => Assert.Equal("Yes", r.Cells[5]));
+        Assert.Contains(own, r => r.Cells[0] == "files" && r.Cells[1] == "CNAME" && r.Cells[5] == "Yes");
 
         // Reverse zone: the standalone PTR and the host's PTR.
         var reverse = internalView.Children.Single(c => c.Cells[0].StartsWith("in-addr.arpa")).Children.Single();
         Assert.Equal(
             [("10", "www.lab.test", ""), ("20", "server1.lab.test", "Yes")],
-            reverse.Children.Select(r => (r.Cells[0], r.Cells[2], r.Cells[3])));
+            reverse.Children.Select(r => (r.Cells[0], r.Cells[2], r.Cells[5])));
+    }
+
+    [Fact]
+    public void Records_and_zones_show_ttl_and_where_it_comes_from()
+    {
+        var records = Section("DNS records");
+        var all = records.Roots.SelectMany(r => r.SelfAndDescendants()).ToList();
+        TreeRow Rec(string name, string type) => all.Single(r => !r.IsGroup && r.Cells[0] == name && r.Cells[1] == type
+                                                                 && r.Cells[6].EndsWith("lab.test") && !r.Cells[6].Contains("arpa"));
+
+        Assert.Equal(("300 (5m)", "Record"), (Rec("www", "A").Cells[3], Rec("www", "A").Cells[4]));
+        Assert.Equal(("3600 (1h)", "Inherited: zone"), (Rec("@", "A").Cells[3], Rec("@", "A").Cells[4]));
+        Assert.Equal("Host object", Rec("files", "CNAME").Cells[4]);
+        Assert.Equal("600 (10m)", Rec("files", "CNAME").Cells[3]);
+
+        var zones = Section("Zones").Roots.SelectMany(r => r.SelfAndDescendants()).ToList();
+        var internalLab = zones.First(r => r.Cells[0] == "lab.test" && r.Cells[6] == "gm.lab.test");
+        Assert.Equal(("3600 (1h)", "Zone"), (internalLab.Cells[3], internalLab.Cells[4]));
+        var reverse = zones.Single(r => r.Cells[0] == "0.0.10.in-addr.arpa");
+        Assert.Equal(("28800 (8h)", "Inherited: grid"), (reverse.Cells[3], reverse.Cells[4]));
+        var delegated = zones.Single(r => r.Cells[0] == "aws.lab.test");
+        Assert.Equal(("", ""), (delegated.Cells[3], delegated.Cells[4])); // no default TTL of its own
     }
 
     [AvaloniaFact]

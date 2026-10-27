@@ -24,6 +24,18 @@ public static class InventoryTables
 
     private static string YesNo(bool value) => value ? "Yes" : "";
 
+    /// <summary>Where a TTL comes from, worded so inherited values are obvious.</summary>
+    private static string TtlFrom(Ttl ttl) => ttl.Seconds is null ? "" : ttl.Source switch
+    {
+        TtlSource.Record => "Record",
+        TtlSource.Host => "Host object",
+        TtlSource.Zone => "Inherited: zone",
+        _ => "Inherited: grid",
+    };
+
+    /// <summary>For zones the zone itself is the override point.</summary>
+    private static string ZoneTtlFrom(Ttl ttl) => ttl.Seconds is null ? "" : ttl.Source == TtlSource.Zone ? "Zone" : "Inherited: grid";
+
     private static string Plural(int count, string noun) => $"{count:N0} {noun}{(count == 1 ? "" : "s")}";
 
     private static TableDefinition Members(GridInventory inv) => new(
@@ -115,30 +127,33 @@ public static class InventoryTables
         var roots = ZoneHierarchy(inv,
             zoneRow: z => new TreeRow(
             [
-                z.Fqdn, z.ZoneType, z.PrimaryType ?? "",
+                z.Fqdn, z.ZoneType, z.PrimaryType ?? "", z.DefaultTtl.Display, ZoneTtlFrom(z.DefaultTtl),
+                lk.RecordCount(z.Key).ToString(),
                 lk.MemberNames(z.GridPrimaryOids), lk.MemberNames(z.GridSecondaryOids),
                 string.Join(", ", z.ExternalSecondaries.Concat(z.MicrosoftPrimaries).Concat(z.DelegatedServers)
                     .Select(ns => ns.Name).Distinct()),
-                lk.RecordCount(z.Key).ToString(), YesNo(z.DnssecEnabled), YesNo(z.Disabled),
+                YesNo(z.DnssecEnabled), YesNo(z.Disabled),
             ]),
             viewRow: (v, zones) => new TreeRow(
             [
-                v.Name, $"View · {Plural(zones.Count, "zone")}", blank, blank, blank, blank,
-                Records(zones).ToString(), blank, YesNo(v.Disabled),
+                v.Name, $"View · {Plural(zones.Count, "zone")}", blank, blank, blank,
+                Records(zones).ToString(), blank, blank, blank, blank, YesNo(v.Disabled),
             ], isGroup: true),
             groupRow: (name, label, zones) => new TreeRow(
             [
-                name, $"{label} · {Plural(zones.Count, "zone")}", blank, blank, blank, blank,
-                Records(zones).ToString(), blank, blank,
+                name, $"{label} · {Plural(zones.Count, "zone")}", blank, blank, blank,
+                Records(zones).ToString(), blank, blank, blank, blank, blank,
             ], isGroup: true),
             out _);
 
         return new TreeTableDefinition(
             "Zones",
             [
-                new("Zone", Width: 320), new("Type", Width: 250), new("Primary"),
+                new("Zone", Width: 300), new("Type", Width: 230), new("Primary"),
+                new("Default TTL", ColumnKind.Number, 120), new("TTL from", Width: 130),
+                new("Records", ColumnKind.Number),
                 new("Grid primaries"), new("Grid secondaries"), new("Other name servers", Width: 240),
-                new("Records", ColumnKind.Number), new("DNSSEC"), new("Disabled"),
+                new("DNSSEC"), new("Disabled"),
             ],
             roots, "zones");
     }
@@ -341,13 +356,18 @@ public static class InventoryTables
 
         var roots = ZoneHierarchy(inv,
             zoneRow: z => new TreeRow(
-                [$"{z.Fqdn}   ({Plural(lk.RecordCount(z.Key), "record")})", z.ZoneType, blank, blank, blank, YesNo(z.Disabled)],
+                [
+                    $"{z.Fqdn}   ({Plural(lk.RecordCount(z.Key), "record")})", z.ZoneType, blank,
+                    z.DefaultTtl.Display,
+                    z.DefaultTtl.Seconds is null ? blank : z.DefaultTtl.Source == TtlSource.Zone ? "Zone default" : "Grid default",
+                    blank, blank, YesNo(z.Disabled),
+                ],
                 isGroup: true),
             viewRow: (v, zones) => new TreeRow(
-                [$"{v.Name}   ({Plural(Count(zones), "record")})", "View", blank, blank, blank, YesNo(v.Disabled)],
+                [$"{v.Name}   ({Plural(Count(zones), "record")})", "View", blank, blank, blank, blank, blank, YesNo(v.Disabled)],
                 isGroup: true),
             groupRow: (name, label, zones) => new TreeRow(
-                [$"{name}   ({Plural(Count(zones), "record")})", label, blank, blank, blank, blank],
+                [$"{name}   ({Plural(Count(zones), "record")})", label, blank, blank, blank, blank, blank, blank],
                 isGroup: true),
             out var zoneNodes);
 
@@ -362,16 +382,17 @@ public static class InventoryTables
             if (!zoneNodes.TryGetValue(r.ZoneKey, out var zoneRow)) continue;
             zoneRow.Add(new TreeRow(
             [
-                r.Name.Length == 0 ? "@" : r.Name, r.Type.ToString(), r.Value, YesNo(r.IsFromHost),
-                r.Fqdn, YesNo(r.Disabled),
+                r.Name.Length == 0 ? "@" : r.Name, r.Type.ToString(), r.Value,
+                r.Ttl.Display, TtlFrom(r.Ttl), YesNo(r.IsFromHost), r.Fqdn, YesNo(r.Disabled),
             ]));
         }
 
         return new TreeTableDefinition(
             "DNS records",
             [
-                new("Name", Width: 340), new("Type", Width: 150), new("Value", Width: 320), new("Host"),
-                new("FQDN", Width: 300), new("Disabled"),
+                new("Name", Width: 300), new("Type", Width: 150), new("Value", Width: 280),
+                new("TTL", ColumnKind.Number, 130), new("TTL from", Width: 200), new("Host"),
+                new("FQDN", Width: 280), new("Disabled"),
             ],
             roots, "records");
     }

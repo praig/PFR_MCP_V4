@@ -7,6 +7,9 @@ public sealed class GridInventory
 {
     public string? GridName { get; set; }
 
+    /// <summary>Grid default TTL for zones that don't override it (Grid DNS properties).</summary>
+    public int? DefaultTtl { get; set; }
+
     /// <summary>NIOS version from the backup header, e.g. "9.0.8-54134-924d94e0dcd0".</summary>
     public string? NiosVersion { get; set; }
 
@@ -102,6 +105,9 @@ public sealed class DnsZone
     public bool IsReverse { get; set; }
     public bool Disabled { get; set; }
     public bool DnssecEnabled { get; set; }
+
+    /// <summary>Default TTL for records in this zone: the zone's override or the grid default.</summary>
+    public Ttl DefaultTtl { get; set; } = new(null, TtlSource.Grid);
     public List<int> GridPrimaryOids { get; } = [];
     public List<int> GridSecondaryOids { get; } = [];
     public List<NameServer> ExternalSecondaries { get; } = [];
@@ -172,5 +178,8 @@ public sealed class DnsRecord
     /// <summary>FQDN of the host object that generates this record, or null for a standalone record.</summary>
     public string? HostName { get; set; }
     public bool IsFromHost => HostName is not null;
+
+    /// <summary>Effective TTL and where it is set (record, host, zone or grid).</summary>
+    public Ttl Ttl { get; set; } = new(null, TtlSource.Grid);
     public bool Disabled { get; set; }
 }
