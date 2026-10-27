@@ -74,8 +74,10 @@ public static class InventorySummary
         sb.AppendLine($"DNS records ({inv.Records.Count})");
         foreach (var g in inv.Records.GroupBy(r => r.Type).OrderBy(g => g.Key))
         {
-            sb.AppendLine($"  {g.Key,-16} {g.Count(),5}");
+            var fromHosts = g.Count(r => r.IsFromHost);
+            sb.AppendLine($"  {g.Key,-16} {g.Count(),5}" + (fromHosts > 0 ? $"   ({fromHosts} from host objects)" : ""));
         }
+        sb.AppendLine($"Host objects     {inv.HostCount,5}");
 
         return sb.ToString();
     }

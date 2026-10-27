@@ -179,7 +179,9 @@ public sealed class InventoryView : UserControl
         Card("Zones", inv.Zones.Count,
             $"{inv.Zones.Count(z => !z.IsReverse)} forward · {inv.Zones.Count(z => z.IsReverse)} reverse");
         Card("DNS records", inv.Records.Count,
-            string.Join(" · ", inv.Records.GroupBy(r => r.Type).OrderBy(g => g.Key).Select(g => $"{g.Count()} {g.Key}")));
+            string.Join(" · ", inv.Records.GroupBy(r => r.Type).OrderByDescending(g => g.Count()).Take(4)
+                .Select(g => $"{g.Count()} {g.Key}"))
+            + $"\n{inv.HostCount:N0} host objects");
         Card("Networks", nets.Count(n => !n.IsContainer),
             $"{nets.Count(n => n.IsContainer)} containers · {inv.NetworkViews.Count} network views");
         Card("DHCP ranges", inv.DhcpRanges.Count,

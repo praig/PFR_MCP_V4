@@ -36,6 +36,12 @@ public static class BackupParser
         "dns.bind_ptr",
         "dns.host",
         "dns.host_address",
+        "dns.host_alias",
+        "dns.bind_mx",
+        "dns.bind_srv",
+        "dns.bind_txt",
+        "dns.bind_naptr",
+        "dns.bind_caa",
     ];
 
     /// <summary>Zone types shown to users; internal types (View, Dummy, SharedRecordGroup…) are skipped.</summary>
@@ -324,11 +330,10 @@ public static class BackupParser
     {
         var zones = inv.Zones.ToDictionary(z => z.Key, StringComparer.Ordinal);
 
-        void Add(OneDbObject o, DnsRecordType type, string value)
+        void AddRecord(string zoneKey, string name, DnsRecordType type, string value, bool disabled,
+            string? hostName = null)
         {
-            var zoneKey = o.GetOrEmpty("zone");
-            if (!zones.TryGetValue(zoneKey, out var zone)) return; // e.g. RPZ/blacklist internals
-            var name = o.GetOrEmpty("name");
+            if (!zones.TryGetValue(zoneKey, out var zone)) return; // e.g. RPZ/blacklist internals, non-DNS hosts
             inv.Records.Add(new DnsRecord
             {
                 Type = type,
@@ -337,34 +342,124 @@ public static class BackupParser
                 Name = name,
                 Fqdn = name is "" or "@" ? zone.Fqdn : $"{name}.{zone.Fqdn}",
                 Value = value,
-                Disabled = o.GetBool("disabled"),
+                Disabled = disabled,
+                HostName = hostName,
             });
         }
+
+        void Add(OneDbObject o, DnsRecordType type, string value) =>
+            AddRecord(o.GetOrEmpty("zone"), o.GetOrEmpty("name"), type, value, o.GetBool("disabled"));
+
+        string Quote(string? s) => $"\"{s ?? ""}\"";
 
         foreach (var o in byType["dns.bind_a"]) Add(o, DnsRecordType.A, o.GetOrEmpty("address"));
         foreach (var o in byType["dns.bind_aaaa"]) Add(o, DnsRecordType.AAAA, o.GetOrEmpty("address"));
         foreach (var o in byType["dns.bind_cname"]) Add(o, DnsRecordType.CNAME, o.GetOrEmpty("canonical_name"));
         foreach (var o in byType["dns.bind_ptr"]) Add(o, DnsRecordType.PTR, o.GetOrEmpty("dname"));
+        foreach (var o in byType["dns.bind_mx"])
+            Add(o, DnsRecordType.MX, $"{o.GetOrEmpty("priority")} {o.GetOrEmpty("mx")}");
+        foreach (var o in byType["dns.bind_srv"])
+            Add(o, DnsRecordType.SRV,
+                $"{o.GetOrEmpty("priority")} {o.GetOrEmpty("weight")} {o.GetOrEmpty("port")} {o.GetOrEmpty("target")}");
+        foreach (var o in byType["dns.bind_txt"]) Add(o, DnsRecordType.TXT, o.GetOrEmpty("txt_string"));
+        foreach (var o in byType["dns.bind_naptr"])
+            Add(o, DnsRecordType.NAPTR,
+                $"{o.GetOrEmpty("order")} {o.GetOrEmpty("preference")} {Quote(o.Get("flag"))} " +
+                $"{Quote(o.Get("services"))} {Quote(o.Get("regexp"))} {(o.Get("replacement") is { Length: > 0 } r ? r : ".")}");
+        foreach (var o in byType["dns.bind_caa"])
+            Add(o, DnsRecordType.CAA, $"{o.GetOrEmpty("ca_flag")} {o.GetOrEmpty("ca_tag")} {Quote(o.Get("ca_value"))}");
 
-        // Host records: addresses live in separate host_address objects keyed by "<zone key>.<host name>".
-        var hostAddresses = byType["dns.host_address"]
-            .GroupBy(a => a.GetOrEmpty("host"), StringComparer.Ordinal)
-            .ToDictionary(g => g.Key, g => string.Join(",", g.Select(a => a.GetOrEmpty("address"))),
-                StringComparer.Ordinal);
-
-        foreach (var o in byType["dns.host"])
+        // NS: NIOS's own NS records are auto-generated, so only delegations are listed,
+        // under the delegated zone.
+        foreach (var z in inv.Zones.Where(z => z.ZoneType == "Delegated"))
         {
-            var hostKey = $"{o.GetOrEmpty("zone")}.{o.GetOrEmpty("name")}";
-            Add(o, DnsRecordType.Host, hostAddresses.GetValueOrDefault(hostKey, ""));
+            foreach (var ns in z.DelegatedServers)
+            {
+                AddRecord(z.Key, "", DnsRecordType.NS, ns.Name, z.Disabled);
+            }
         }
+
+        AddHostRecords(inv, byType, zones, AddRecord);
 
         inv.Records.Sort((a, b) =>
         {
             var c = string.CompareOrdinal(a.ViewKey, b.ViewKey);
             if (c != 0) return c;
             c = string.Compare(a.Fqdn, b.Fqdn, StringComparison.OrdinalIgnoreCase);
-            return c != 0 ? c : a.Type.CompareTo(b.Type);
+            if (c != 0) return c;
+            c = a.Type.CompareTo(b.Type);
+            return c != 0 ? c : IpSort.Compare(a.Value, b.Value);
         });
+    }
+
+    /// <summary>
+    /// A host object serves several records: A/AAAA for each address, a PTR in the
+    /// matching reverse zone (when the grid hosts it), and a CNAME for each alias.
+    /// </summary>
+    private static void AddHostRecords(
+        GridInventory inv,
+        Dictionary<string, List<OneDbObject>> byType,
+        Dictionary<string, DnsZone> zones,
+        Action<string, string, DnsRecordType, string, bool, string?> addRecord)
+    {
+        var hosts = new Dictionary<string, (string Fqdn, bool Disabled)>(StringComparer.Ordinal);
+        var addressesByHost = byType["dns.host_address"].ToLookup(a => a.GetOrEmpty("host"), StringComparer.Ordinal);
+        foreach (var h in byType["dns.host"])
+        {
+            var zoneKey = h.GetOrEmpty("zone");
+            if (!zones.TryGetValue(zoneKey, out var zone)) continue; // non-DNS host (IPAM only)
+            var name = h.GetOrEmpty("name");
+            var fqdn = name.Length == 0 ? zone.Fqdn : $"{name}.{zone.Fqdn}";
+            hosts[$"{zoneKey}.{name}"] = (fqdn, h.GetBool("disabled"));
+
+            foreach (var a in addressesByHost[$"{zoneKey}.{name}"])
+            {
+                var address = a.GetOrEmpty("address");
+                var isV4 = a.Get("is_ipv4") is not "false";
+                addRecord(zoneKey, name, isV4 ? DnsRecordType.A : DnsRecordType.AAAA, address, h.GetBool("disabled"), fqdn);
+
+                // PTR in the reverse zone NIOS links the address to, if the grid hosts it.
+                if (a.Get("reverse_zone") is { Length: > 0 } reverseKey
+                    && zones.TryGetValue(reverseKey, out var reverseZone)
+                    && ReverseName(address) is { } reverse
+                    && RelativeTo(reverse, reverseZone.Fqdn) is { } ptrName)
+                {
+                    addRecord(reverseKey, ptrName, DnsRecordType.PTR, fqdn, h.GetBool("disabled"), fqdn);
+                }
+            }
+        }
+        inv.HostCount = hosts.Count;
+
+        foreach (var alias in byType["dns.host_alias"])
+        {
+            if (!hosts.TryGetValue(alias.GetOrEmpty("host"), out var host)) continue;
+            addRecord(alias.GetOrEmpty("zone"), alias.GetOrEmpty("alias"), DnsRecordType.CNAME,
+                host.Fqdn, host.Disabled, host.Fqdn);
+        }
+    }
+
+    /// <summary>"10.0.0.20" → "20.0.0.10.in-addr.arpa"; IPv6 → nibble form under ip6.arpa.</summary>
+    internal static string? ReverseName(string address)
+    {
+        if (!System.Net.IPAddress.TryParse(address, out var ip)) return null;
+        var bytes = ip.GetAddressBytes();
+        if (bytes.Length == 4)
+        {
+            return string.Join('.', bytes.Reverse()) + ".in-addr.arpa";
+        }
+
+        var nibbles = bytes.SelectMany(b => new[] { b >> 4, b & 0xF }).Reverse().Select(n => n.ToString("x"));
+        return string.Join('.', nibbles) + ".ip6.arpa";
+    }
+
+    /// <summary>The part of <paramref name="fqdn"/> before <paramref name="zone"/>, or null if it isn't in that zone.</summary>
+    internal static string? RelativeTo(string fqdn, string zone)
+    {
+        zone = zone.TrimEnd('.');
+        if (string.Equals(fqdn, zone, StringComparison.OrdinalIgnoreCase)) return "";
+        return fqdn.EndsWith("." + zone, StringComparison.OrdinalIgnoreCase)
+            ? fqdn[..^(zone.Length + 1)]
+            : null;
     }
 
     private static string? NullIfEmpty(string? s) => string.IsNullOrWhiteSpace(s) ? null : s;

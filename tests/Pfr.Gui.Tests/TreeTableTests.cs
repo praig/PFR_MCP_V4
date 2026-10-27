@@ -56,39 +56,46 @@ public class TreeTableTests
 
         Assert.Equal(["External", "Internal"], records.Roots.Select(r => r.Cells[0].Split(' ')[0]));
         var internalView = records.Roots.Single(r => r.Cells[0].StartsWith("Internal"));
-        Assert.Contains("(6 records)", internalView.Cells[0]); // 5 in lab.test + 1 PTR
+        Assert.Contains("(16 records)", internalView.Cells[0]);
 
         var lab = internalView.Children.Single(c => c.Cells[0].StartsWith("test")).Children.Single();
         Assert.StartsWith("lab.test", lab.Cells[0]);
         Assert.True(lab.IsGroup);
 
-        // Sub-zone first, then the zone's own records by name ("@" is the apex).
-        Assert.StartsWith("aws.lab.test", lab.Children[0].Cells[0]);
+        // Sub-zone first (with its delegation NS), then the zone's own records ("@" is the apex).
+        var aws = lab.Children[0];
+        Assert.StartsWith("aws.lab.test", aws.Cells[0]);
+        Assert.Equal(["@", "NS", "ns-1.awsdns.test"], Assert.Single(aws.Children).Cells.Take(3));
+
         var own = lab.Children.Skip(1).ToList();
         Assert.All(own, r => Assert.False(r.IsGroup));
-        Assert.Contains(own, r => r.Cells[0] == "@" && r.Cells[1] == "A" && r.Cells[3] == "lab.test");
-        Assert.Contains(own, r => r.Cells[0] == "www" && r.Cells[2] == "10.0.0.10" && r.Cells[3] == "www.lab.test");
-        Assert.Contains(own, r => r.Cells[0] == "server1" && r.Cells[1] == "Host");
-        Assert.Contains(own, r => r.Cells[0] == "old" && r.Cells[4] == "Yes");
+        Assert.Contains(own, r => r.Cells[0] == "@" && r.Cells[1] == "A" && r.Cells[3] == "" && r.Cells[4] == "lab.test");
+        Assert.Contains(own, r => r.Cells[0] == "@" && r.Cells[1] == "MX" && r.Cells[2] == "10 mail.lab.test");
+        Assert.Contains(own, r => r.Cells[0] == "old" && r.Cells[5] == "Yes");
 
-        var reverse = internalView.Children.Single(c => c.Cells[0].StartsWith("in-addr.arpa"));
-        var ptr = Assert.Single(reverse.Children.Single().Children);
-        Assert.Equal(["10", "PTR", "www.lab.test"], ptr.Cells.Take(3));
+        // Host object records: real types, flagged in the Host column.
+        var server1 = own.Where(r => r.Cells[0] == "server1").ToList();
+        Assert.Equal(["A", "A", "AAAA"], server1.Select(r => r.Cells[1]));
+        Assert.All(server1, r => Assert.Equal("Yes", r.Cells[3]));
+        Assert.Contains(own, r => r.Cells[0] == "files" && r.Cells[1] == "CNAME" && r.Cells[3] == "Yes");
 
-        // The AAAA record is in the External view's copy of lab.test.
-        var external = records.Roots.Single(r => r.Cells[0].StartsWith("External"));
-        Assert.Contains(external.SelfAndDescendants(), r => r.Cells[1] == "AAAA");
+        // Reverse zone: the standalone PTR and the host's PTR.
+        var reverse = internalView.Children.Single(c => c.Cells[0].StartsWith("in-addr.arpa")).Children.Single();
+        Assert.Equal(
+            [("10", "www.lab.test", ""), ("20", "server1.lab.test", "Yes")],
+            reverse.Children.Select(r => (r.Cells[0], r.Cells[2], r.Cells[3])));
     }
 
     [AvaloniaFact]
     public void Records_tree_counts_only_records()
     {
-        var table = new TreeTable(Section("DNS records"));
-        Assert.Equal(7, Section("DNS records").Roots.SelectMany(r => r.SelfAndDescendants()).Count(r => !r.IsGroup));
+        var section = Section("DNS records");
+        Assert.Equal(17, section.Roots.SelectMany(r => r.SelfAndDescendants()).Count(r => !r.IsGroup));
 
+        var table = new TreeTable(section);
         table.SetAllExpanded(false);
-        table.ApplyFilter("server1");
-        Assert.Equal("server1", table.VisibleRows.Last().Cells[0]);
+        table.ApplyFilter("files");
+        Assert.Equal("files", table.VisibleRows.Last().Cells[0]);
         Assert.StartsWith("lab.test", table.VisibleRows[^2].Cells[0]);
     }
 

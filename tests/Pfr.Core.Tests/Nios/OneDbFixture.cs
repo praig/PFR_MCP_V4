@@ -10,7 +10,9 @@ namespace Pfr.Core.Tests.Nios;
 /// </summary>
 internal static class OneDbFixture
 {
-    private static string P(string name, string value) => $"<PROPERTY NAME=\"{name}\" VALUE=\"{value}\"/>";
+    // Values are XML-escaped as in real backups (e.g. TXT quotes become &quot;).
+    private static string P(string name, string value) =>
+        $"<PROPERTY NAME=\"{name}\" VALUE=\"{System.Security.SecurityElement.Escape(value)}\"/>";
 
     private static string O(string type, params (string Name, string Value)[] props) =>
         "<OBJECT>" + P("__type", ".com.infoblox." + type) +
@@ -109,8 +111,26 @@ internal static class OneDbFixture
         O("dns.bind_cname", ("zone", "._default.blacklist"), ("name", "com.bad"), ("canonical_name", "")),
         O("dns.bind_ptr", ("zone", "._default.arpa.in-addr.10.0.0"), ("name", "10"), ("dname", "www.lab.test")),
         O("dns.host", ("zone", "._default.test.lab"), ("name", "server1")),
-        O("dns.host_address", ("host", "._default.test.lab.server1"), ("address", "10.0.0.20")),
-        O("dns.host_address", ("host", "._default.test.lab.server1"), ("address", "10.0.0.21")),
+        // Host: two IPv4 (one linked to the 10.0.0 reverse zone) and one IPv6 address, plus an alias.
+        O("dns.host_address", ("host", "._default.test.lab.server1"), ("address", "10.0.0.20"), ("is_ipv4", "true"),
+            ("reverse_zone", "._default.arpa.in-addr.10.0.0")),
+        O("dns.host_address", ("host", "._default.test.lab.server1"), ("address", "10.0.0.21"), ("is_ipv4", "true")),
+        O("dns.host_address", ("host", "._default.test.lab.server1"), ("address", "2001:db8::20"), ("is_ipv4", "false")),
+        O("dns.host_alias", ("zone", "._default.test.lab"), ("alias", "files"), ("host", "._default.test.lab.server1")),
+        // A non-DNS host (IPAM only) must not produce records.
+        O("dns.host", ("zone", ".non_DNS_host_root"), ("name", "printer")),
+        O("dns.host_address", ("host", ".non_DNS_host_root.printer"), ("address", "10.0.0.30"), ("is_ipv4", "true")),
+
+        // Other record types.
+        O("dns.bind_mx", ("zone", "._default.test.lab"), ("name", ""), ("priority", "10"), ("mx", "mail.lab.test")),
+        O("dns.bind_srv", ("zone", "._default.test.lab"), ("name", "_sip._tcp"), ("priority", "10"), ("weight", "20"),
+            ("port", "5060"), ("target", "sip.lab.test")),
+        O("dns.bind_txt", ("zone", "._default.test.lab"), ("name", ""), ("txt_string", "\"v=spf1 -all\"")),
+        O("dns.bind_naptr", ("zone", "._default.test.lab"), ("name", "voip"), ("order", "90"), ("preference", "50"),
+            ("flag", "S"), ("services", "SIP+D2T"), ("regexp", ""), ("replacement", "_sip._tcp.lab.test")),
+        O("dns.bind_caa", ("zone", "._default.test.lab"), ("name", ""), ("ca_flag", "0"), ("ca_tag", "issue"),
+            ("ca_value", "letsencrypt.org"), ("ca_value_hash", "abc123")),
+        O("dns.bind_ns", ("zone", "._default.test.lab"), ("name", ""), ("dname", "gm.lab.test"), ("auto_created", "true")),
 
         // IPAM
         O("dns.network_container", ("address", "10.0.0.0"), ("cidr", "8"), ("network_view", "0"), ("is_ipv4", "true"),

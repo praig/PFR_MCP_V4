@@ -94,14 +94,60 @@ public class BackupParserTests
         Assert.Contains(inv.Records, r => r.Type == DnsRecordType.AAAA && r.ViewKey == ".1");
         Assert.Contains(inv.Records, r => r.Type == DnsRecordType.PTR && r.Fqdn == "10.0.0.10.in-addr.arpa" && r.Value == "www.lab.test");
 
-        var cnames = inv.Records.Where(r => r.Type == DnsRecordType.CNAME).ToList();
+        var cnames = inv.Records.Where(r => r.Type == DnsRecordType.CNAME && !r.IsFromHost).ToList();
         Assert.Equal(2, cnames.Count); // blacklist pseudo-record excluded
         Assert.True(cnames.Single(c => c.Name == "old").Disabled);
 
-        var host = inv.Records.Single(r => r.Type == DnsRecordType.Host);
-        Assert.Equal("server1.lab.test", host.Fqdn);
-        Assert.Equal("10.0.0.20,10.0.0.21", host.Value);
+        Assert.Equal(1, inv.HostCount); // the non-DNS host is not counted
     }
+
+    [Fact]
+    public void Expands_host_objects_into_the_records_they_serve()
+    {
+        var inv = Parse();
+        var fromHost = inv.Records.Where(r => r.HostName == "server1.lab.test").ToList();
+
+        Assert.Equal(
+            [
+                (DnsRecordType.A, "server1.lab.test", "10.0.0.20"),
+                (DnsRecordType.A, "server1.lab.test", "10.0.0.21"),
+                (DnsRecordType.AAAA, "server1.lab.test", "2001:db8::20"),
+                (DnsRecordType.CNAME, "files.lab.test", "server1.lab.test"),
+                (DnsRecordType.PTR, "20.0.0.10.in-addr.arpa", "server1.lab.test"), // only the linked address
+            ],
+            fromHost.Select(r => (r.Type, r.Fqdn, r.Value)).OrderBy(x => x.Type).ThenBy(x => x.Value));
+
+        var ptr = fromHost.Single(r => r.Type == DnsRecordType.PTR);
+        Assert.Equal("._default.arpa.in-addr.10.0.0", ptr.ZoneKey);
+        Assert.Equal("20", ptr.Name);
+
+        Assert.DoesNotContain(inv.Records, r => r.Value == "10.0.0.30"); // non-DNS host
+        Assert.All(inv.Records.Where(r => r.HostName is null), r => Assert.False(r.IsFromHost));
+    }
+
+    [Fact]
+    public void Reads_other_record_types_in_zone_file_style()
+    {
+        var inv = Parse();
+        string Value(DnsRecordType t) => inv.Records.Single(r => r.Type == t).Value;
+
+        Assert.Equal("10 mail.lab.test", Value(DnsRecordType.MX));
+        Assert.Equal("10 20 5060 sip.lab.test", Value(DnsRecordType.SRV));
+        Assert.Equal("\"v=spf1 -all\"", Value(DnsRecordType.TXT));
+        Assert.Equal("90 50 \"S\" \"SIP+D2T\" \"\" _sip._tcp.lab.test", Value(DnsRecordType.NAPTR));
+        Assert.Equal("0 issue \"letsencrypt.org\"", Value(DnsRecordType.CAA));
+
+        // NS: auto-generated NIOS NS records are skipped; delegations are listed under the delegated zone.
+        var ns = Assert.Single(inv.Records, r => r.Type == DnsRecordType.NS);
+        Assert.Equal("aws.lab.test", ns.Fqdn);
+        Assert.Equal("ns-1.awsdns.test", ns.Value);
+    }
+
+    [Theory]
+    [InlineData("10.0.0.20", "20.0.0.10.in-addr.arpa")]
+    [InlineData("2001:db8::1", "1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa")]
+    public void Reverse_names(string address, string expected) =>
+        Assert.Equal(expected, BackupParser.ReverseName(address));
 
     [Fact]
     public void Builds_ipam_and_dhcp()

@@ -19,6 +19,9 @@ public sealed class GridInventory
     public List<FailoverAssociation> FailoverAssociations { get; } = [];
     public List<DnsRecord> Records { get; } = [];
 
+    /// <summary>Host objects in DNS zones (each also appears as A/AAAA/PTR/CNAME records).</summary>
+    public int HostCount { get; set; }
+
     public GridMember? FindMember(int? oid) =>
         oid is null ? null : Members.FirstOrDefault(m => m.Oid == oid);
 }
@@ -150,7 +153,7 @@ public sealed class FailoverAssociation
     public string? MsMode { get; set; }
 }
 
-public enum DnsRecordType { A, AAAA, CNAME, PTR, Host }
+public enum DnsRecordType { A, AAAA, CNAME, PTR, MX, SRV, TXT, NAPTR, CAA, NS }
 
 public sealed class DnsRecord
 {
@@ -160,7 +163,10 @@ public sealed class DnsRecord
     /// <summary>Name relative to the zone ("" for the zone apex).</summary>
     public string Name { get; set; } = "";
     public string Fqdn { get; set; } = "";
-    /// <summary>Address for A/AAAA/Host (Host: comma-separated), target for CNAME/PTR.</summary>
+    /// <summary>Record data in zone-file style, e.g. an address, a target, or "10 20 80 sip.example.com" for SRV.</summary>
     public string Value { get; set; } = "";
+    /// <summary>FQDN of the host object that generates this record, or null for a standalone record.</summary>
+    public string? HostName { get; set; }
+    public bool IsFromHost => HostName is not null;
     public bool Disabled { get; set; }
 }
