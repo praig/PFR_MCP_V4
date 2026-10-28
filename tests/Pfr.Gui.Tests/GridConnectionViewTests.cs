@@ -297,4 +297,99 @@ public class GridConnectionViewTests
         Assert.Contains("read-only account", editor.MessageText);
         Assert.False(await editor.PullBackupAsync());
     }
+
+    // ---- WAPI: live status -------------------------------------------------------------
+
+    /// <summary>A client with one grid whose connection to <paramref name="server"/> is saved (and its certificate pinned, unless told not to).</summary>
+    private static (MainWindow Window, ClientDetailView Detail) OpenGridWithConnection(FakeWapiServer server, bool pinned = true)
+    {
+        var (folder, client) = StoreWithGrids("Production");
+        var (window, detail) = OpenClient(folder, client);
+        detail.SelectGrid(detail.Grids.Single().Id);
+        var editor = detail.ConnectionEditor;
+        FillConnection(editor, server);
+        if (pinned) editor.FingerprintBox.Text = CertificatePin.Format(server.Fingerprint);
+        Assert.True(editor.Save());
+        return (window, detail);
+    }
+
+    [AvaloniaFact]
+    public async Task Live_status_reads_the_grid_and_shows_members_and_problems()
+    {
+        using var server = new FakeWapiServer();
+        var (window, detail) = OpenGridWithConnection(server);
+        var live = detail.LiveStatus;
+        Assert.Null(live.Current);
+
+        Assert.True(await live.RefreshAsync());
+
+        var status = Assert.IsType<LiveGridStatus>(live.Current);
+        Assert.Equal(["gm.lab.test", "ns1.lab.test"], status.Members.Select(m => m.HostName));
+        Assert.Equal(Health.Failed, status.Health);
+        Assert.Contains("Lab Grid", live.SummaryText);
+        Assert.Contains("Failed", live.SummaryText);
+        Assert.Contains("9.0.8-12345", live.SummaryText);
+        Assert.Equal("", live.MessageText);
+        Snapshot(window, "37-live-status");
+    }
+
+    [AvaloniaFact]
+    public async Task Live_status_will_not_connect_to_a_certificate_that_is_not_trusted()
+    {
+        using var server = new FakeWapiServer();
+        var (_, detail) = OpenGridWithConnection(server, pinned: false);
+
+        Assert.False(await detail.LiveStatus.RefreshAsync());
+
+        Assert.Contains("Connection tab", detail.LiveStatus.MessageText);
+        Assert.Contains(CertificatePin.Format(server.Fingerprint), detail.LiveStatus.MessageText);
+        Assert.Empty(server.Requests); // no user id or password was sent
+        Assert.Null(detail.LiveStatus.Current);
+    }
+
+    [AvaloniaFact]
+    public async Task Live_status_says_what_the_grid_could_not_provide()
+    {
+        using var server = new FakeWapiServer { UpgradeStatusError = 400 };
+        var (_, detail) = OpenGridWithConnection(server);
+
+        Assert.True(await detail.LiveStatus.RefreshAsync());
+
+        Assert.Contains("upgradestatus", detail.LiveStatus.NotesText);
+        Assert.Contains("unknown", detail.LiveStatus.SummaryText); // NIOS versions
+    }
+
+    [AvaloniaFact]
+    public async Task Live_status_is_kept_per_grid_while_the_page_is_open()
+    {
+        using var server = new FakeWapiServer();
+        var (folder, client) = StoreWithGrids("Production", "Lab");
+        var (_, detail) = OpenClient(folder, client);
+        var production = detail.Grids.Single(g => g.Name == "Production");
+        var lab = detail.Grids.Single(g => g.Name == "Lab");
+        detail.SelectGrid(production.Id);
+        FillConnection(detail.ConnectionEditor, server);
+        detail.ConnectionEditor.FingerprintBox.Text = CertificatePin.Format(server.Fingerprint);
+        Assert.True(detail.ConnectionEditor.Save());
+        Assert.True(await detail.LiveStatus.RefreshAsync());
+
+        detail.SelectGrid(lab.Id);
+        Assert.Null(detail.LiveStatus.Current);
+        Assert.Contains("Not read yet", detail.LiveStatus.SummaryText);
+
+        detail.SelectGrid(production.Id);
+        Assert.NotNull(detail.LiveStatus.Current);
+        Assert.Contains("Lab Grid", detail.LiveStatus.SummaryText);
+    }
+
+    [AvaloniaFact]
+    public async Task Live_status_needs_a_saved_connection_with_a_read_only_account()
+    {
+        var (folder, client) = StoreWithGrids("Production");
+        var (_, detail) = OpenClient(folder, client);
+        detail.SelectGrid(detail.Grids.Single().Id);
+
+        Assert.False(await detail.LiveStatus.RefreshAsync());
+        Assert.Contains("Connection tab", detail.LiveStatus.MessageText);
+    }
 }

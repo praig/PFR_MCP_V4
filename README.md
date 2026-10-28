@@ -100,6 +100,23 @@ A pulled backup is parsed as it downloads and is **never written to disk**; only
 snapshot of the grid. The read-only account needs permission to take backups on the grid. For scripts, pass the
 fingerprint you have verified with `--pin <sha256>`.
 
+### Live status over WAPI
+
+The grid's **Live status** tab (and the command line) reads what the grid reports right now: each member and its
+nodes, HA state (and whether an HA pair has exactly one active node), every service's state, NIOS versions and
+hotfixes, rolled up into an overall status with a list of problems. It is read-only, uses the same pinned certificate
+and read-only account, and stores nothing.
+
+```bash
+pfr wapi-status --client "Acme Corp" --grid "Production"           # table plus problems
+pfr wapi-status --client "Acme Corp" --grid "Production" --json
+pfr wapi-get --client "Acme Corp" --grid "Production" --object member --fields host_name,node_info
+```
+
+The grid is asked which fields each object offers and only those are requested, so a field your NIOS or WAPI version
+lacks shows up as a note instead of an error. `wapi-get` prints the grid's raw answer to one read request (or an
+object's schema with `--schema`), which is the quickest way to check field names against your grid.
+
 Summarize a grid backup from the command line:
 
 ```bash

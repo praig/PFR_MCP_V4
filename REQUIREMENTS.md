@@ -72,7 +72,7 @@ Scope is **NIOS (on-prem grids)**. External network sources (Forward Networks, N
 2. **NIOS CSV exports** (Global CSV Export or per-object) — mapped to the same data model as backups.
 3. **WAPI**
    - Pull a fresh grid backup and parse it through the same pipeline ✅ — with the grid's read-only account; the download is parsed as it arrives and **never saved to disk**, so the secrets inside a backup stay off the engineer's machine. Stored as a snapshot of the grid like a file import (`pfr wapi-backup`; Connection tab › *Pull backup now*). A backup from a different grid than the one on file is refused.
-   - Collect live operational data: member and service status, HA state, DHCP utilization and lease counts, NIOS version and hotfixes.
+   - Collect live operational data: member and service status ✅, HA state ✅, NIOS version and hotfixes ✅ (read-only; `pfr wapi-status`, Live status tab, below); DHCP utilization and lease counts [planned].
    - WAPI version auto-detected ✅ (the newest the grid says it supports, compared as numbers; set one on the connection to override); paging for large result sets ✅ (in the client, ready for the live-data features).
    - TLS ✅: certificate fingerprint pinned per grid on first connect (SSH-host-key style): the first connect shows the fingerprint to confirm, and the connection is dropped **during the TLS handshake**, before any user id or password is sent, if the certificate is not the pinned one. A changed certificate is refused until the engineer explicitly replaces the pin. Verification is never simply disabled. [Planned] A client's CA bundle can also be loaded.
 4. **Location data** — manual entry, CSV upload, or mapped from grid extensible attributes (§10).
@@ -162,7 +162,7 @@ Scope is **NIOS (on-prem grids)**. External network sources (Forward Networks, N
 
 ### 9.3 Working with clients and grids (GUI)
 - **Clients tab:** first-run setup (create master password), unlock, client list with each client's **grids beneath it**; clicking a grid opens its latest snapshot.
-- **Client page:** *Details* (name, notes, contacts), *Grids* (import backup, save the grid open in Inventory, open latest, rename, delete; per selected grid a *Snapshots* tab with open/delete and a *Connection* tab for its WAPI address, accounts and pinned certificate, with **Test connection** and **Pull backup now** (an unknown or changed certificate is shown for the engineer to trust or not)), *Engagement log* (dated entries with title and text, optionally linked to a grid snapshot), *Logins & keys* (the client's own sites: title, URL, user id, password, API key, notes; secrets masked until shown).
+- **Client page:** *Details* (name, notes, contacts), *Grids* (import backup, save the grid open in Inventory, open latest, rename, delete; per selected grid a *Snapshots* tab with open/delete and a *Connection* tab for its WAPI address, accounts and pinned certificate, with **Test connection** and **Pull backup now** (an unknown or changed certificate is shown for the engineer to trust or not), and a *Live status* tab: members with their nodes, HA state, services, NIOS versions and hotfixes, read over WAPI on demand and not stored), *Engagement log* (dated entries with title and text, optionally linked to a grid snapshot), *Logins & keys* (the client's own sites: title, URL, user id, password, API key, notes; secrets masked until shown).
 - **Header switcher** lists every *Client › Grid*; choosing one opens its latest snapshot **instantly — no backup needed**.
 - The **last grid viewed is reopened** automatically after unlock.
 - A backup opened with **Open backup…** shows a **save bar** to store it under a client.
@@ -175,6 +175,8 @@ Grid connections: `pfr connection-set --client <name> --grid <name> [--address <
 Client site logins and API keys: `pfr logins --client <n>` (no secrets shown), `pfr login-set --client <n> --title <t> [--url <site>] [--user <id>] [--notes <text>] [--new-title <t>] [--password] [--api-key]` (creates or updates by title; `--password` / `--api-key` prompt without echo or read `PFR_LOGIN_PASSWORD` / `PFR_LOGIN_API_KEY`), `pfr login-show --client <n> --title <t> [--reveal]`, `pfr login-remove --client <n> --title <t>`.
 
 WAPI (read-only, with the grid's saved read-only account and pinned certificate): `pfr wapi-test --client <name> --grid <name> [--pin <sha256>]` checks certificate, account and WAPI version; `pfr wapi-backup --client <name> --grid <name> [--label <text>] [--pin <sha256>]` pulls a backup and stores it as a snapshot. An unpinned certificate's fingerprint is shown for confirmation (or passed with `--pin`, which also replaces a changed pin); `pfr connection-set ... --cert-fingerprint <sha256|none>` sets or clears the pin.
+
+Live state over WAPI (read-only): `pfr wapi-status --client <name> --grid <name> [--json]` shows members, nodes, HA state, service states, NIOS versions and hotfixes, with an overall status and a list of problems (a failed or offline service, a warning, an HA pair without exactly one active node). The grid is asked which fields each object offers (`_schema`) and only those are requested, so something a NIOS or WAPI version lacks appears as a note rather than an error. `pfr wapi-get --client <name> --grid <name> --object <type> [--fields <a,b>] [--filter <k=v>] [--schema]` prints the grid's raw answer to one read request, for checking field names against a real grid.
 
 ### 9.5 Later
 - Compare snapshots ("what changed since last time").
@@ -261,7 +263,7 @@ Renamed from "Health check". Holds **predefined reports** and a **data explorer*
 - Ranges served only by members at a different site; multi-site ranges without failover; objects with no location.
 
 ### 12.4 Live / network-tool rules
-- Member unreachable by ping or SNMP; services down; SOA serials out of sync; DNS answers differing between servers; high CPU/memory/disk.
+- Member unreachable by ping or SNMP; services down (data over WAPI ✅, rules still to be written); SOA serials out of sync; DNS answers differing between servers; high CPU/memory/disk.
 
 ### 12.5 CNAME resolution report
 - **Offline** from the backup (chains followed through grid-hosted zones per view; external targets marked "not verified") and **live** via a chosen resolver. [PENDING] default resolver.

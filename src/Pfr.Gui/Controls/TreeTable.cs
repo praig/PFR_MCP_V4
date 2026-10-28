@@ -366,15 +366,18 @@ public static class TableCells
     private static readonly IBrush Danger = new SolidColorBrush(Color.Parse("#F47067"));
     private static readonly IBrush Warning = new SolidColorBrush(Color.Parse("#E5B54B"));
 
-    /// <summary>Red for expired / high severity, amber for expiring / medium, otherwise the default text color.</summary>
+    /// <summary>Red for expired / failed / high severity, amber for expiring / warning / medium, otherwise the default text color.</summary>
     public static IBrush? StatusBrush(string? status) => status switch
     {
         null or "" => null,
         _ when status.StartsWith("Expired", StringComparison.OrdinalIgnoreCase)
-               || status.Equals("High", StringComparison.OrdinalIgnoreCase) => Danger,
+               || status.Equals("High", StringComparison.OrdinalIgnoreCase)
+               || status.Equals("Failed", StringComparison.OrdinalIgnoreCase)
+               || status.Equals("Offline", StringComparison.OrdinalIgnoreCase) => Danger,
         _ when status.StartsWith("Expires", StringComparison.OrdinalIgnoreCase)
                || status.StartsWith("Expiring", StringComparison.OrdinalIgnoreCase)
-               || status.Equals("Medium", StringComparison.OrdinalIgnoreCase) => Warning,
+               || status.Equals("Medium", StringComparison.OrdinalIgnoreCase)
+               || status.Equals("Warning", StringComparison.OrdinalIgnoreCase) => Warning,
         _ => null,
     };
 }

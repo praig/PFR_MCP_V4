@@ -52,6 +52,8 @@ public static class Program
                 "login-remove" => RemoveLogin(cli),
                 "wapi-test" => WapiTest(cli),
                 "wapi-backup" => WapiBackup(cli),
+                "wapi-status" => WapiStatus(cli),
+                "wapi-get" => WapiGet(cli),
                 _ => Fail($"Unknown command: {cli.Command}\nRun 'pfr help' for usage.", 2),
             };
         }
@@ -566,6 +568,57 @@ public static class Program
         return 0;
     }
 
+    /// <summary>Reads the grid's live state over WAPI: members, HA, services, NIOS versions and hotfixes.</summary>
+    private static int WapiStatus(Args cli)
+    {
+        if (cli.Value("--client") is not { } clientName || cli.Value("--grid") is not { } gridName)
+            return Fail("Usage: pfr wapi-status --client <name> --grid <name> [--json] [--pin <sha256>]", 2);
+
+        var ws = Unlock(cli);
+        using var _ = ws.Store;
+        var client = FindClient(ws, clientName);
+        var grid = FindGrid(client, gridName);
+        var status = WithGrid(ws, client, grid, cli, wapi => LiveStatusCollector.CollectAsync(wapi));
+
+        if (cli.Has("--json"))
+        {
+            var options = new JsonSerializerOptions
+            {
+                WriteIndented = true,
+                DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+                Converters = { new JsonStringEnumConverter() },
+            };
+            Console.WriteLine(JsonSerializer.Serialize(status, options));
+        }
+        else
+        {
+            Console.Write(LiveStatusReport.Render(status, $"{client.Name} \u203a {grid.Name}"));
+        }
+        return 0;
+    }
+
+    /// <summary>
+    /// Shows exactly what the grid answers for one read request (or an object's schema), as JSON. For checking
+    /// field names against a real grid. Read-only.
+    /// </summary>
+    private static int WapiGet(Args cli)
+    {
+        if (cli.Value("--client") is not { } clientName || cli.Value("--grid") is not { } gridName
+            || cli.Value("--object") is not { } objectType)
+        {
+            return Fail("Usage: pfr wapi-get --client <name> --grid <name> --object <type> [--fields <a,b>] [--filter <k=v>] [--schema]", 2);
+        }
+
+        var ws = Unlock(cli);
+        using var _ = ws.Store;
+        var client = FindClient(ws, clientName);
+        var grid = FindGrid(client, gridName);
+        var json = WithGrid(ws, client, grid, cli,
+            wapi => wapi.GetRawAsync(objectType, cli.Value("--fields"), cli.Value("--filter"), cli.Has("--schema")));
+        Console.WriteLine(json);
+        return 0;
+    }
+
     // ---- Helpers ----------------------------------------------------------------
 
     private static string Count(int n, string noun) => $"{n} {noun}{(n == 1 ? "" : "s")}";
@@ -633,6 +686,9 @@ public static class Program
         Console.WriteLine("  wapi-test --client <n> --grid <n> [--pin <sha256>]    Check certificate, account and WAPI version");
         Console.WriteLine("  wapi-backup --client <n> --grid <n> [--label <t>] [--pin <sha256>]");
         Console.WriteLine("                                               Pull a fresh backup and store it as a snapshot (never saved to disk)");
+        Console.WriteLine("  wapi-status --client <n> --grid <n> [--json]     Live state: members, HA, services, NIOS versions, hotfixes");
+        Console.WriteLine("  wapi-get --client <n> --grid <n> --object <type> [--fields <a,b>] [--filter <k=v>] [--schema]");
+        Console.WriteLine("                                               Show the grid's raw answer to one read request (to check field names)");
         Console.WriteLine();
         Console.WriteLine("Options:");
         Console.WriteLine($"  --data <folder>   Client data folder (default: {DataLocation.FolderName} next to pfr, or ${DataLocation.EnvironmentVariable})");
@@ -644,7 +700,7 @@ public static class Program
     /// <summary>Minimal argument parser: a command, --name value options, --flags and positionals.</summary>
     private sealed class Args
     {
-        private static readonly HashSet<string> Flags = ["--json", "--reveal", "--password", "--api-key"];
+        private static readonly HashSet<string> Flags = ["--json", "--reveal", "--password", "--api-key", "--schema"];
         private readonly Dictionary<string, string> _values = new(StringComparer.Ordinal);
         private readonly HashSet<string> _flags = new(StringComparer.Ordinal);
 

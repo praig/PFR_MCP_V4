@@ -27,6 +27,7 @@ public sealed class ClientDetailView : UserControl
     private ListBox _snapshotList = null!;
     private GridConnectionEditor _connection = null!;
     private SiteLoginsEditor _logins = null!;
+    private LiveStatusView _live = null!;
     private TextBox _gridName = null!;
     private TextBlock _gridMessage = null!;
     private ListBox _logList = null!;
@@ -66,6 +67,9 @@ public sealed class ClientDetailView : UserControl
 
     /// <summary>The Connection tab's form for the selected grid.</summary>
     public GridConnectionEditor ConnectionEditor => _connection;
+
+    /// <summary>The Live status tab for the selected grid (read over WAPI).</summary>
+    public LiveStatusView LiveStatus => _live;
 
     /// <summary>The "Logins &amp; keys" tab (the client's own sites and API keys).</summary>
     public SiteLoginsEditor LoginsEditor => _logins;
@@ -259,6 +263,7 @@ public sealed class ClientDetailView : UserControl
     private Control BuildGrids()
     {
         _connection = new GridConnectionEditor(_workspace);
+        _live = new LiveStatusView(_workspace);
         _connection.SnapshotAdded += (_, e) =>
         {
             Reload(e.Grid.Id);
@@ -315,6 +320,7 @@ public sealed class ClientDetailView : UserControl
             _snapshotList.ItemsSource = grid?.Snapshots.OrderByDescending(s => s.ImportedUtc).ToList();
             _gridName.Text = grid?.Name ?? "";
             _connection.Bind(Client.Id, grid);
+            _live.Bind(Client.Id, grid);
         };
         _gridList.DoubleTapped += async (_, _) =>
         {
@@ -412,6 +418,7 @@ public sealed class ClientDetailView : UserControl
             {
                 new TabItem { Header = "Snapshots", Content = snapshotsPane },
                 new TabItem { Header = "Connection", Content = _connection },
+                new TabItem { Header = "Live status", Content = _live },
             },
         };
         Grid.SetColumn(detailTabs, 2);

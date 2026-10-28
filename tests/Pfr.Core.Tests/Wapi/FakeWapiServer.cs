@@ -30,6 +30,33 @@ internal sealed class FakeWapiServer : IDisposable
     private readonly CancellationTokenSource _stop = new();
     private readonly ConcurrentQueue<FakeRequest> _requests = new();
 
+    private const string DefaultMembers = """
+        [
+          {"_ref":"member/ZG5z:gm.lab.test","host_name":"gm.lab.test","enable_ha":false,
+           "node_info":[{"ha_status":"NOT_CONFIGURED","hwmodel":"IB-V926","service_status":[
+              {"service":"AUTH_NAMED","status":"WORKING","description":"Running"},
+              {"service":"DHCPD","status":"WORKING","description":"Running"},
+              {"service":"NTP_SYNC","status":"INACTIVE","description":"NTP is disabled"}]}]},
+          {"_ref":"member/ZG5y:ns1.lab.test","host_name":"ns1.lab.test","enable_ha":true,
+           "node_info":[
+             {"ha_status":"ACTIVE","hwmodel":"IB-V926","service_status":[
+                {"service":"AUTH_NAMED","status":"WORKING","description":"Running"},
+                {"service":"DHCPD","status":"WORKING","description":"Running"}]},
+             {"ha_status":"PASSIVE","hwmodel":"IB-V926","service_status":[
+                {"service":"AUTH_NAMED","status":"WORKING","description":"Running"},
+                {"service":"DHCPD","status":"FAILED","description":"The DHCP service failed to start"},
+                {"service":"SWAP_USAGE","status":"WARNING","description":"Swap usage is 62%"}]}]}
+        ]
+        """;
+
+    private const string DefaultUpgradeStatus = """
+        [
+          {"_ref":"upgradestatus/b25l:gm","type":"VNODE","member":"gm.lab.test","current_version":"9.0.8-12345",
+           "hotfixes":[{"version":"Hotfix-9.0.8-1","status_text":"Applied"}]},
+          {"_ref":"upgradestatus/b25m:ns1","type":"VNODE","member":"ns1.lab.test","current_version":"9.0.8-12345","hotfixes":[]}
+        ]
+        """;
+
     public FakeWapiServer()
     {
         Certificate = CreateCertificate();
@@ -57,6 +84,22 @@ internal sealed class FakeWapiServer : IDisposable
     public string GridName { get; set; } = "Lab Grid";
     public string[] SupportedVersions { get; set; } = ["1.0", "2.9", "2.12", "2.10"];
     public string Token { get; } = "token-1234";
+
+    /// <summary>The field names offered per object type through <c>?_schema</c>.</summary>
+    public Dictionary<string, string[]> SchemaFields { get; } = new()
+    {
+        ["member"] = ["host_name", "enable_ha", "node_info", "platform"],
+        ["upgradestatus"] = ["member", "type", "current_version", "hotfixes"],
+    };
+
+    /// <summary>The answer to reads of <c>member</c>.</summary>
+    public string MembersJson { get; set; } = DefaultMembers;
+
+    /// <summary>The answer to reads of <c>upgradestatus</c>.</summary>
+    public string UpgradeStatusJson { get; set; } = DefaultUpgradeStatus;
+
+    /// <summary>When set, reads of <c>upgradestatus</c> are answered with this error status instead.</summary>
+    public int? UpgradeStatusError { get; set; }
 
     /// <summary>The host the grid claims in its backup download address; deliberately not this server.</summary>
     public string AnnouncedHost { get; set; } = "elsewhere.invalid:9";
@@ -160,6 +203,24 @@ internal sealed class FakeWapiServer : IDisposable
 
         if (request.Method == "POST" && path.Contains("fileop?_function=downloadcomplete", StringComparison.Ordinal))
             return FakeResponse.Json(200, "{}");
+
+        var segments = path.Split('?')[0].Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (request.Method == "GET" && segments.Length == 3 && segments[0] == "wapi" && segments[1].StartsWith('v'))
+        {
+            var type = segments[2];
+            if (path.Contains("_schema", StringComparison.Ordinal) && SchemaFields.TryGetValue(type, out var fields))
+            {
+                var list = string.Join(",", fields.Select(f => $"{{\"name\":\"{f}\"}}"));
+                return FakeResponse.Json(200, $"{{\"type\":\"{type}\",\"fields\":[{list}]}}");
+            }
+            if (type == "member") return FakeResponse.Json(200, MembersJson);
+            if (type == "upgradestatus")
+            {
+                return UpgradeStatusError is { } status
+                    ? FakeResponse.Json(status, "{\"Error\":\"AdmConProtoError: Invalid request\",\"text\":\"The type search field is required\"}")
+                    : FakeResponse.Json(200, UpgradeStatusJson);
+            }
+        }
 
         return FakeResponse.Json(404, "{\"Error\":\"AdmConProtoError: Unknown path\",\"text\":\"Unknown path\"}");
     }

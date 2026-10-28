@@ -30,6 +30,7 @@ public sealed class WapiClient : IDisposable
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan BackupPrepareTimeout = TimeSpan.FromMinutes(30);
     private static readonly string[] SchemaProbeVersions = ["v1.0", "v2.0"];
+    private static readonly JsonSerializerOptions PrettyJson = new() { WriteIndented = true };
 
     /// <summary>The only non-GET calls allowed: ask for a grid backup download, and say it has finished.</summary>
     private static readonly string[] ReadOnlyFunctions = ["getgriddata", "downloadcomplete"];
@@ -131,6 +132,56 @@ public sealed class WapiClient : IDisposable
     }
 
     /// <summary>
+    /// Reads the objects of a type in one request (for small result sets such as members). Elements are copies.
+    /// <paramref name="filter"/> is an already-encoded search such as <c>type=VNODE</c>.
+    /// </summary>
+    public async Task<List<JsonElement>> GetListAsync(
+        string objectType, string? returnFields = null, string? filter = null, CancellationToken ct = default)
+    {
+        var version = await EnsureVersionAsync(ct).ConfigureAwait(false);
+        using var doc = await GetJsonAsync(Api(version, Relative(objectType, returnFields, filter, schema: false)), ct)
+            .ConfigureAwait(false);
+        if (doc.RootElement.ValueKind != JsonValueKind.Array)
+            throw new WapiException($"{Host} returned an unexpected answer for {objectType}.");
+        return doc.RootElement.EnumerateArray().Select(e => e.Clone()).ToList();
+    }
+
+    /// <summary>The field names the grid offers for an object type (its <c>_schema</c>).</summary>
+    public async Task<HashSet<string>> GetSchemaFieldsAsync(string objectType, CancellationToken ct = default)
+    {
+        var version = await EnsureVersionAsync(ct).ConfigureAwait(false);
+        using var doc = await GetJsonAsync(Api(version, Relative(objectType, null, null, schema: true)), ct)
+            .ConfigureAwait(false);
+
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        if (doc.RootElement.ValueKind == JsonValueKind.Object
+            && doc.RootElement.TryGetProperty("fields", out var fields) && fields.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var field in fields.EnumerateArray())
+            {
+                if (field.ValueKind == JsonValueKind.Object
+                    && field.TryGetProperty("name", out var name) && name.ValueKind == JsonValueKind.String
+                    && name.GetString() is { Length: > 0 } text)
+                {
+                    names.Add(text);
+                }
+            }
+        }
+        return names;
+    }
+
+    /// <summary>One read request, answered as indented JSON text. For looking at what a grid really returns.</summary>
+    public async Task<string> GetRawAsync(
+        string objectType, string? returnFields = null, string? filter = null, bool schema = false,
+        CancellationToken ct = default)
+    {
+        var version = await EnsureVersionAsync(ct).ConfigureAwait(false);
+        using var doc = await GetJsonAsync(Api(version, Relative(objectType, returnFields, filter, schema)), ct)
+            .ConfigureAwait(false);
+        return JsonSerializer.Serialize(doc.RootElement, PrettyJson);
+    }
+
+    /// <summary>
     /// Asks the grid for a backup and hands the download to <paramref name="consume"/> as a stream, so it can be
     /// parsed without being saved. Tells the grid when done, even if <paramref name="consume"/> fails.
     /// </summary>
@@ -200,6 +251,22 @@ public sealed class WapiClient : IDisposable
     }
 
     private Uri Api(string version, string relative) => new(_baseUri, $"/wapi/v{version}/{relative}");
+
+    /// <summary>The path and query for reading an object type. The type is checked so it can't add to the path.</summary>
+    private static string Relative(string objectType, string? returnFields, string? filter, bool schema)
+    {
+        if (objectType.Length == 0 || objectType.Contains("..", StringComparison.Ordinal)
+            || !objectType.All(c => char.IsAsciiLetterOrDigit(c) || c is '_' or ':' or '.' or '-' or '/'))
+        {
+            throw new ArgumentException($"\"{objectType}\" is not a WAPI object type.");
+        }
+
+        var query = new List<string>();
+        if (schema) query.Add("_schema");
+        if (!string.IsNullOrEmpty(filter)) query.Add(filter);
+        if (!string.IsNullOrEmpty(returnFields)) query.Add("_return_fields=" + Uri.EscapeDataString(returnFields));
+        return query.Count == 0 ? objectType : $"{objectType}?{string.Join('&', query)}";
+    }
 
     private static string DownloadPath(string url) =>
         Uri.TryCreate(url, UriKind.Absolute, out var absolute)
