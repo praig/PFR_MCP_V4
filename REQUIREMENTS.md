@@ -309,7 +309,7 @@ Renamed from "Health check". Holds **predefined reports**, a **data explorer** a
 
 ---
 
-## 13. Module 5 — IPAM (planned)
+## 13. Module 5 — IPAM (started: engine and CLI ✅; GUI, hosts and records, external sources pending)
 
 A client-wide **address plan**: one tree of networks, with the DHCP ranges, hosts and address records inside them, built from every source the client has — first its NIOS grids (from their stored snapshots), later external network sources such as Forward Networks and NetBrain. IPAM belongs to the **client**, not to a grid: each network exists **once** in the plan and records which grids and external sources it is **present in**.
 
@@ -322,7 +322,7 @@ A client-wide **address plan**: one tree of networks, with the DHCP ranges, host
 ### 13.2 Keys and presence
 - **The IP address is always the key.** Networks and containers are keyed by **prefix**, address-level objects by **IP address** (a DHCP range by its start–end addresses). Names, network views / VRFs and sources are attributes, never part of a key; a network view only groups the tree (§13.3).
 - IPAM is **per client**. A **network object** (a container or network) exists **once** in the client's plan, keyed by its prefix, and carries a **Present in** attribute: the list of **grids** and **external sources** where it exists. 10.1.0.0/16 on three grids is one network present in three grids, not three networks.
-- Each presence keeps what that source says about the network — its network view or VRF, kind (container / network), comment and disabled flag, and for a grid the snapshot it came from. The row shows a value when all presences agree and **varies** when they don't, with the per-source values visible in the row's details.
+- Each presence keeps what that source says about the network — its network view or VRF, kind (container / network), comment and disabled flag, and for a grid the snapshot it came from. The row shows a value when all presences agree and **lists each different value, comma separated,** when they don't (for a disabled flag, the sources that have it set), with the per-source values visible in the row's details.
 - Objects *inside* a network — DHCP ranges, hosts, A / AAAA / PTR records, devices and their interface addresses — are **not merged**: each is listed **once per grid or source it exists in**, with its own single **Grid / Source**, even when the same host, device or address is on several.
 - Presence is derived, not typed in. NIOS grids contribute from their **latest snapshot** (no backup needed; the snapshot date is shown per grid, "as of"); external sources contribute from their newest import batch (§13.5). Adding a snapshot or batch, or deleting a grid or source, updates it.
 - Matching is by prefix alone. Identical prefixes in different network views or VRFs (for example unrelated private space) are therefore one network, present in both; the tree shows it under each of those views, and whether that is intended or a mistake is a finding (§13.7).
@@ -386,8 +386,9 @@ Placement rules:
 - This is the Infoblox ↔ network correlation that was previously deferred together with Forward Networks.
 
 ### 13.8 GUI and CLI
-- **IPAM** module tab, after Inventory, with sections *Address plan* (the tree), *Devices* (table) and *Sources* (the client's grids with their snapshot dates, the external sources with their batches, and **Import…**).
-- CLI (planned): `pfr ipam --client <name> [--grid <name>] [--source <name>] [--json]`, `pfr ipam-sources --client <name>`, `pfr ipam-import --client <name> --source <name> <file> [--label <text>] [--dry-run]`.
+- **IPAM** module tab, after Inventory, with sections *Address plan* (the tree), *Devices* (table) and *Sources* (the client's grids with their snapshot dates, the external sources with their batches, and **Import…**). **First version ✅:** the tab after Inventory opens the *Address plan* tree of one client (a client picker, defaulting to the client whose grid is open), with a grid filter, *Present in more than one grid* and a DHCP ranges switch. It is built when the tab is opened and rebuilt after a client, grid or snapshot changes. *Devices* and *Sources* come with external sources.
+- **Built so far** ✅: the address-plan engine — one network per prefix with **Present in** and per-source values (a comma separated list of the different values when they differ), nesting by containment across grids within each network view (views of the same name on different grids are one view), DHCP ranges placed under the most specific network of their own view or under *(no network)*, roll-up counts, and a grid filter that keeps matches with their containers — built from each grid's latest stored snapshot. **Not built yet:** hosts and A / AAAA / PTR records under their networks (the parser does not yet read IPAM-only hosts), a details panel with each source's own values for a network, the filters for network view, object kind and IP version, external sources and import, and the findings of §13.7.
+- CLI ✅: `pfr ipam --client <name> [--grid <name>] [--json] [--no-ranges]` prints the plan as an indented tree, or as JSON. Planned: `--source <name>`, `pfr ipam-sources --client <name>` and `pfr ipam-import --client <name> --source <name> <file> [--label <text>] [--dry-run]`.
 
 ---
 

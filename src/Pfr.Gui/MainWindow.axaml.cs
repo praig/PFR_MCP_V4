@@ -38,13 +38,18 @@ public partial class MainWindow : Window, IInventoryHost
         _store = new SecureStore(dataFolder);
 
         Inventory = new InventoryView();
+        Ipam = new IpamView();
         Inventory.OpenRequested += async (_, _) => await PickAndLoadAsync();
         OpenButton.Click += async (_, _) => await PickAndLoadAsync();
 
         Clients = new ClientsView(_store, this, kdfIterations);
         Reports = new ReportsView(new ReportTemplateStore(TemplateLocation.Resolve(templatesFolder)));
         Clients.StateChanged += async (_, _) => await OnStoreStateChangedAsync();
-        Clients.DataChanged += (_, _) => RefreshPickers();
+        Clients.DataChanged += (_, _) =>
+        {
+            RefreshPickers();
+            Ipam.Invalidate(); // a client, grid or snapshot changed: the address plan is rebuilt when next shown
+        };
 
         GridPicker.SelectionChanged += async (_, _) =>
         {
@@ -62,6 +67,7 @@ public partial class MainWindow : Window, IInventoryHost
                 Content = module switch
                 {
                     AppModule.Inventory => Inventory,
+                    AppModule.Ipam => Ipam,
                     AppModule.ClientWorkspace => Clients,
                     AppModule.Reports => Reports,
                     _ => Placeholder(summary),
@@ -72,11 +78,20 @@ public partial class MainWindow : Window, IInventoryHost
         // Start on Clients: work is organised per client.
         ShowModule(AppModule.ClientWorkspace);
 
+        // The address plan is built when its tab is opened. (Lists inside the pages raise this event too.)
+        ModuleTabs.SelectionChanged += async (_, e) =>
+        {
+            if (ReferenceEquals(e.Source, ModuleTabs) && ModuleTabs.SelectedItem is TabItem { Content: IpamView })
+                await ShowIpamAsync();
+        };
+
         // Closing the app forgets the key; data stays encrypted on disk.
         Closed += (_, _) => _store.Dispose();
     }
 
     public InventoryView Inventory { get; }
+
+    public IpamView Ipam { get; }
 
     public ClientsView Clients { get; }
 
@@ -99,6 +114,12 @@ public partial class MainWindow : Window, IInventoryHost
 
     public void ShowModule(AppModule module) =>
         ModuleTabs.SelectedIndex = ModuleCatalog.All.ToList().FindIndex(m => m.Module == module);
+
+    /// <summary>
+    /// Builds (if needed) and shows the address plan of the client being worked on: the one whose grid was opened last,
+    /// else the one selected in Clients.
+    /// </summary>
+    public Task ShowIpamAsync() => Ipam.ShowAsync(Clients.Workspace, Clients.CurrentDetail?.Client.Id);
 
     private static Control Placeholder(string summary) => new TextBlock
     {
@@ -172,6 +193,7 @@ public partial class MainWindow : Window, IInventoryHost
         ShowLoaded(inventory,
             new LoadedSource(snapshot.SourceFileName, snapshot.SourceBytes, snapshot.SourceSha256),
             (client, grid, snapshot));
+        Ipam.PreferClient(client.Id);
         var when = snapshot.ImportedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
         LoadedText.Text = $"NIOS {ShortVersion(inventory.NiosVersion)}  ·  snapshot {when}" +
                           (snapshot.Label.Length > 0 ? $"  ·  {snapshot.Label}" : "");
@@ -208,6 +230,7 @@ public partial class MainWindow : Window, IInventoryHost
     /// <summary>After unlocking, reopen the grid that was open last time (without leaving Clients).</summary>
     private async Task OnStoreStateChangedAsync()
     {
+        Ipam.Invalidate(); // unlocking or locking changes what the address plan may show
         // Locking hides client data everywhere, including a client grid shown in Inventory.
         if (Clients.Workspace is null && LoadedSnapshot is not null)
         {

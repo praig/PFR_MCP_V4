@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Pfr.Core;
 using Pfr.Core.Clients;
+using Pfr.Core.Ipam;
 using Pfr.Core.Nios.Backup;
 using Pfr.Core.Nios.Model;
 using Pfr.Core.Query;
@@ -44,6 +45,7 @@ public static class Program
                 "import" => Import(cli),
                 "grids" => ListGrids(cli),
                 "show" => Show(cli),
+                "ipam" => RunIpam(cli),
                 "connection-set" => SetConnection(cli),
                 "connection-show" => ShowConnection(cli),
                 "connection-remove" => RemoveConnection(cli),
@@ -247,6 +249,35 @@ public static class Program
         if (!cli.Has("--json"))
             Console.WriteLine($"{client.Name} › {grid.Name}, snapshot {latest.Snapshot.ImportedUtc.ToLocalTime():yyyy-MM-dd HH:mm}\n");
         Print(latest.Inventory, cli.Has("--json"));
+        return 0;
+    }
+
+    /// <summary>
+    /// The client's address plan (spec §13): every network once by prefix with the grids it is present in, nested by
+    /// containment under its network view, with the DHCP ranges inside. Built from each grid's latest snapshot.
+    /// </summary>
+    private static int RunIpam(Args cli)
+    {
+        if (cli.Value("--client") is not { } clientName)
+            return Fail("Usage: pfr ipam --client <name> [--grid <name>] [--json] [--no-ranges]", 2);
+        var ws = Unlock(cli);
+        using var _ = ws.Store;
+        var client = FindClient(ws, clientName);
+        var grid = cli.Value("--grid") is { } gridName ? FindGrid(client, gridName).Name : null;
+
+        var notes = new List<string>();
+        var inputs = IpamSources.LoadGrids(ws, client, notes);
+        if (inputs.Count == 0)
+            return Fail($"{client.Name} has no grid snapshots yet, so there is no address plan. Import a backup with: pfr import --client \"{client.Name}\" <backup>");
+        if (grid is not null && inputs.All(i => !string.Equals(i.GridName, grid, StringComparison.OrdinalIgnoreCase)))
+            return Fail($"{grid} has no snapshot yet, so it is not in the plan.");
+
+        var plan = IpamBuilder.Build(inputs);
+        var showRanges = !cli.Has("--no-ranges");
+        if (cli.Has("--json"))
+            Console.WriteLine(IpamJson.ToJson(plan, client.Name, notes, grid, showRanges));
+        else
+            Console.Write(IpamTextReport.Render(plan, client.Name, notes, grid, showRanges));
         return 0;
     }
 
@@ -915,6 +946,9 @@ public static class Program
         Console.WriteLine("  import --client <name> <file> [--label <t>]   Store a backup as a snapshot of its grid");
         Console.WriteLine("  grids --client <name>                         List a client's grids and snapshots");
         Console.WriteLine("  show --client <name> --grid <name> [--json]   Summarize a grid's latest snapshot");
+        Console.WriteLine("  ipam --client <name> [--grid <name>] [--json] [--no-ranges]");
+        Console.WriteLine("                                               The client's address plan across all its grids' latest snapshots:");
+        Console.WriteLine("                                               networks by prefix, which grids each is present in, DHCP ranges inside");
         Console.WriteLine();
         Console.WriteLine("Grid connections (WAPI address and accounts, stored encrypted with the client):");
         Console.WriteLine("  connection-set --client <n> --grid <n> [--address <host>] [--port <n>] [--wapi-version <v>]");
@@ -961,7 +995,7 @@ public static class Program
     /// <summary>Minimal argument parser: a command, --name value options, --flags and positionals.</summary>
     private sealed class Args
     {
-        private static readonly HashSet<string> Flags = ["--json", "--reveal", "--password", "--api-key", "--schema", "--csv", "--excel-safe"];
+        private static readonly HashSet<string> Flags = ["--json", "--reveal", "--password", "--api-key", "--schema", "--csv", "--excel-safe", "--no-ranges"];
         private readonly Dictionary<string, string> _values = new(StringComparer.Ordinal);
         private readonly HashSet<string> _flags = new(StringComparer.Ordinal);
         private readonly Dictionary<string, List<string>> _all = new(StringComparer.Ordinal);
