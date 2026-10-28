@@ -90,7 +90,7 @@ public class ReportsViewTests
     }
 
     [AvaloniaFact]
-    public void Explore_data_is_a_placeholder()
+    public async Task Explore_data_asks_for_a_grid_when_none_is_open()
     {
         var window = TestWindows.New();
         window.Show();
@@ -100,5 +100,10 @@ public class ReportsViewTests
 
         Assert.Equal(ReportsView.ExploreData, window.Reports.SelectedReport);
         Assert.Null(window.Reports.CurrentTable);
+        Assert.Null(window.Reports.Explore.LastResult);
+        Assert.Contains("records", window.Reports.Explore.TableNames); // the tables can be browsed before a grid is open
+
+        Assert.False(await window.Reports.Explore.RunAsync());
+        Assert.Equal("Open a grid first.", window.Reports.Explore.ErrorText);
     }
 }

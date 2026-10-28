@@ -7,6 +7,7 @@ using Pfr.Core;
 using Pfr.Core.Clients;
 using Pfr.Core.Nios.Backup;
 using Pfr.Core.Nios.Model;
+using Pfr.Core.Query;
 using Pfr.Core.Storage;
 using Pfr.Gui.Views;
 
@@ -28,7 +29,8 @@ public partial class MainWindow : Window, IInventoryHost
 
     /// <param name="dataFolder">Where encrypted client data lives.</param>
     /// <param name="kdfIterations">PBKDF2 iterations for a new store (tests use fewer).</param>
-    public MainWindow(string dataFolder, int kdfIterations = SecureStore.DefaultIterations)
+    /// <param name="templatesFolder">Where report templates (plain JSON files) live; next to the application by default.</param>
+    public MainWindow(string dataFolder, int kdfIterations = SecureStore.DefaultIterations, string? templatesFolder = null)
     {
         InitializeComponent();
 
@@ -40,7 +42,7 @@ public partial class MainWindow : Window, IInventoryHost
         OpenButton.Click += async (_, _) => await PickAndLoadAsync();
 
         Clients = new ClientsView(_store, this, kdfIterations);
-        Reports = new ReportsView();
+        Reports = new ReportsView(new ReportTemplateStore(TemplateLocation.Resolve(templatesFolder)));
         Clients.StateChanged += async (_, _) => await OnStoreStateChangedAsync();
         Clients.DataChanged += (_, _) => RefreshPickers();
 

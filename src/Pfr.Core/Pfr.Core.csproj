@@ -15,4 +15,12 @@
     <InternalsVisibleTo Include="Pfr.Core.Tests" />
   </ItemGroup>
 
+  <!--
+    Explore data runs SQL against an in-memory copy of a snapshot. Microsoft.Data.Sqlite is MIT; it brings
+    SQLite (public domain) as a bundled native library, so nothing is installed on the target machine.
+  -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.11" />
+  </ItemGroup>
+
 </Project>

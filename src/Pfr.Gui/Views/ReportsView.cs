@@ -3,6 +3,7 @@ using Avalonia.Controls;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Pfr.Core.Nios.Model;
+using Pfr.Core.Query;
 using Pfr.Core.Reports;
 using Pfr.Gui.Controls;
 using Pfr.Gui.Tables;
@@ -10,8 +11,8 @@ using Pfr.Gui.Tables;
 namespace Pfr.Gui.Views;
 
 /// <summary>
-/// Reports module: predefined reports that run on the grid currently open
-/// (chosen with the header switcher or Open backup…), plus the data explorer.
+/// Reports module: predefined reports that run on the grid currently open (chosen with the header switcher or
+/// Open backup…), the data explorer, and the engineer's own report templates (saved queries, under My reports).
 /// </summary>
 public sealed class ReportsView : UserControl
 {
@@ -19,45 +20,146 @@ public sealed class ReportsView : UserControl
     public const string DanglingCnames = DanglingCnameReport.Title;
     public const string ExploreData = "Explore data";
 
+    private static readonly string[] BuiltIn = [LicenseExpiry, DanglingCnames, ExploreData];
+
+    private readonly ReportTemplateStore _templates;
+    private readonly SnapshotDatabaseCache _cache = new();
     private readonly ListBox _list;
+    private readonly ListBox _templateList = new() { Background = Brushes.Transparent };
+    private readonly TextBlock _noTemplates = new()
+    {
+        Text = "None yet. Write a query in Explore data and use Save as report.",
+        TextWrapping = TextWrapping.Wrap,
+        Opacity = 0.6,
+        FontSize = 12,
+        Margin = new Thickness(10, 2, 4, 0),
+    };
+    private readonly TextBlock _templateProblems = new()
+    {
+        TextWrapping = TextWrapping.Wrap,
+        Opacity = 0.7,
+        FontSize = 12,
+        IsVisible = false,
+        Margin = new Thickness(10, 6, 4, 0),
+    };
     private readonly ContentControl _body = new();
     private GridInventory? _inventory;
     private string _context = "";
+    private ExploreView? _explore;
+    private TemplateReportView? _templatePage;
+    private bool _syncing;
 
     private int _windowDays = 90;
     private bool _showResolving;
     private bool _showNotVerified = true;
 
-    public ReportsView()
+    public ReportsView(ReportTemplateStore templates)
     {
+        _templates = templates;
+
         _list = new ListBox
         {
             Background = Brushes.Transparent,
-            ItemsSource = new[] { LicenseExpiry, DanglingCnames, ExploreData },
+            ItemsSource = BuiltIn,
         };
-        _list.SelectionChanged += (_, _) => Render();
+        _list.SelectionChanged += (_, _) => OnNavSelectionChanged(_list, _templateList);
+        _templateList.SelectionChanged += (_, _) => OnNavSelectionChanged(_templateList, _list);
+
+        var reload = new Button { Content = "Reload", FontSize = 12, Padding = new Thickness(8, 2) };
+        reload.Click += (_, _) => RefreshTemplates();
+        var myReports = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Margin = new Thickness(0, 14, 0, 6) };
+        myReports.Children.Add(new TextBlock
+        {
+            Text = "My reports",
+            Opacity = 0.6,
+            Margin = new Thickness(10, 0, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        Grid.SetColumn(reload, 1);
+        myReports.Children.Add(reload);
 
         var nav = new Border
         {
-            Width = 210,
+            Width = 230,
             BorderThickness = new Thickness(0, 0, 1, 0),
             BorderBrush = Ui.Divider,
             Padding = new Thickness(6, 10),
-            Child = new StackPanel
+            Child = new ScrollViewer
             {
-                Children =
+                Content = new StackPanel
                 {
-                    new TextBlock { Text = "Reports", Opacity = 0.6, Margin = new Thickness(10, 0, 0, 6) },
-                    _list,
+                    Children =
+                    {
+                        new TextBlock { Text = "Reports", Opacity = 0.6, Margin = new Thickness(10, 0, 0, 6) },
+                        _list,
+                        myReports,
+                        _templateList,
+                        _noTemplates,
+                        _templateProblems,
+                    },
                 },
             },
         };
         DockPanel.SetDock(nav, Dock.Left);
         Content = new DockPanel { Children = { nav, _body } };
+
+        RefreshTemplates();
         _list.SelectedIndex = 0;
     }
 
-    public string? SelectedReport => _list.SelectedItem as string;
+    /// <summary>The built-in report, or the report template, that is selected.</summary>
+    public string? SelectedReport => _list.SelectedItem as string ?? SelectedTemplate?.Name;
+
+    /// <summary>The report template selected under My reports, if any.</summary>
+    public ReportTemplate? SelectedTemplate => _templateList.SelectedItem as ReportTemplate;
+
+    /// <summary>Where report templates are kept.</summary>
+    public ReportTemplateStore Templates => _templates;
+
+    /// <summary>The names listed under My reports.</summary>
+    public IReadOnlyList<string> TemplateNames =>
+        (_templateList.ItemsSource as IEnumerable<ReportTemplate> ?? []).Select(t => t.Name).ToList();
+
+    /// <summary>Template files that couldn't be used (and why), as found by the last reload.</summary>
+    public IReadOnlyList<string> TemplateProblems { get; private set; } = [];
+
+    /// <summary>The Explore data page (SQL on the open grid's snapshot); created the first time it is needed.</summary>
+    public ExploreView Explore
+    {
+        get
+        {
+            if (_explore is null)
+            {
+                _explore = new ExploreView(_cache, _templates);
+                _explore.TemplateSaved += (_, _) => RefreshTemplates();
+            }
+            return _explore;
+        }
+    }
+
+    /// <summary>The page that runs a report template; created the first time it is needed.</summary>
+    public TemplateReportView TemplatePage
+    {
+        get
+        {
+            if (_templatePage is null)
+            {
+                _templatePage = new TemplateReportView(_cache, _templates);
+                _templatePage.EditRequested += (_, template) =>
+                {
+                    Explore.LoadTemplate(template);
+                    SelectReport(ExploreData);
+                };
+                _templatePage.Deleted += (_, template) =>
+                {
+                    if (_explore?.EditingTemplate?.Id == template.Id) _explore.StopEditing();
+                    RefreshTemplates();
+                    SelectReport(ExploreData);
+                };
+            }
+            return _templatePage;
+        }
+    }
 
     /// <summary>The results table of the report on screen, if any.</summary>
     public FilterableTable? CurrentTable { get; private set; }
@@ -67,11 +169,55 @@ public sealed class ReportsView : UserControl
 
     public DanglingCnameResult? CnameResult { get; private set; }
 
-    public void SelectReport(string name) => _list.SelectedItem = name;
+    /// <summary>Selects a built-in report, or a report template by name.</summary>
+    public void SelectReport(string name)
+    {
+        if (BuiltIn.Contains(name))
+        {
+            _list.SelectedItem = name;
+        }
+        else if ((_templateList.ItemsSource as IEnumerable<ReportTemplate>)?.FirstOrDefault(t => t.Name == name) is { } template)
+        {
+            _templateList.SelectedItem = template;
+        }
+    }
+
+    /// <summary>Reads the templates folder again (after files were added, changed or removed outside the app).</summary>
+    public void RefreshTemplates()
+    {
+        var selectedId = SelectedTemplate?.Id;
+        var problems = new List<string>();
+        var templates = _templates.List(problems);
+        TemplateProblems = problems;
+
+        _syncing = true;
+        try
+        {
+            _templateList.ItemsSource = templates;
+            _templateList.SelectedItem = templates.FirstOrDefault(t => t.Id == selectedId);
+        }
+        finally
+        {
+            _syncing = false;
+        }
+
+        _noTemplates.IsVisible = templates.Count == 0;
+        _templateProblems.IsVisible = problems.Count > 0;
+        _templateProblems.Text = problems.Count == 1
+            ? $"1 file in the templates folder couldn't be used: {problems[0]}"
+            : problems.Count > 1
+                ? $"{problems.Count} files in the templates folder couldn't be used, e.g. {problems[0]}"
+                : "";
+
+        // A template that is on screen may have changed on disk: show it as it is now.
+        if (SelectedTemplate is not null) Render();
+    }
 
     /// <summary>Sets the grid the reports run on (null when nothing is open).</summary>
     public void ShowInventory(GridInventory? inventory, string context)
     {
+        // The loaded copy of the old grid's data goes as soon as another grid (or none) is shown.
+        if (!ReferenceEquals(inventory, _inventory)) _cache.Release();
         _inventory = inventory;
         _context = context;
         Render();
@@ -90,15 +236,42 @@ public sealed class ReportsView : UserControl
         Render();
     }
 
+    private void OnNavSelectionChanged(ListBox changed, ListBox other)
+    {
+        if (_syncing) return;
+        if (changed.SelectedItem is not null)
+        {
+            // One report is selected at a time, whichever list it is in.
+            _syncing = true;
+            try
+            {
+                other.SelectedItem = null;
+            }
+            finally
+            {
+                _syncing = false;
+            }
+        }
+        Render();
+    }
+
     private void Render()
     {
         CurrentTable = null;
         LicenseResult = null;
         CnameResult = null;
 
+        if (SelectedTemplate is { } template)
+        {
+            TemplatePage.Show(template, _inventory, _context);
+            _body.Content = TemplatePage;
+            return;
+        }
+
         if (SelectedReport == ExploreData)
         {
-            _body.Content = ExplorePlaceholder();
+            Explore.SetInventory(_inventory, _context);
+            _body.Content = Explore;
             return;
         }
 
@@ -214,41 +387,6 @@ public sealed class ReportsView : UserControl
         return Page(DanglingCnames, DanglingCnameReport.Description, options,
             new StackPanel { Spacing = 4, Children = { summary, scope } }, table);
     }
-
-    // ---- Explore data (placeholder) -----------------------------------------------
-
-    private static Control ExplorePlaceholder() => new ScrollViewer
-    {
-        Content = new StackPanel
-        {
-            Margin = new Thickness(24, 18),
-            MaxWidth = 760,
-            HorizontalAlignment = HorizontalAlignment.Left,
-            Spacing = 10,
-            Children =
-            {
-                Ui.Heading("Explore data"),
-                new Border
-                {
-                    Background = Ui.Surface,
-                    BorderBrush = Ui.Divider,
-                    BorderThickness = new Thickness(1),
-                    CornerRadius = new CornerRadius(8),
-                    Padding = new Thickness(16, 12),
-                    Child = new StackPanel
-                    {
-                        Spacing = 6,
-                        Children =
-                        {
-                            new TextBlock { Text = "Coming in a later version", FontWeight = FontWeight.SemiBold },
-                            Ui.Muted("Browse the tables found in a grid backup (each NIOS object type), see their " +
-                                     "fields, and query against them."),
-                        },
-                    },
-                },
-            },
-        },
-    };
 
     // ---- Layout helpers -----------------------------------------------------------
 

@@ -1,6 +1,6 @@
 # PFR_MCP_V4 — Requirements
 
-Status: **Draft v0.6** — updated 2026-10-28. Items marked **[PENDING]** are open decisions (see [Open decisions](#15-open-decisions)).
+Status: **Draft v0.8** — updated 2026-10-28. Items marked **[PENDING]** are open decisions (see [Open decisions](#15-open-decisions)).
 Items marked **✅** are implemented.
 
 ---
@@ -50,6 +50,7 @@ Scope is **NIOS (on-prem grids)**. External network sources (Forward Networks, N
 | SSH | SSH.NET | MIT | planned |
 | DNS | DnsClient.NET | Apache 2.0 | planned |
 | Ping | System.Net.NetworkInformation (built in) | — | planned |
+| SQL for Explore data | Microsoft.Data.Sqlite + SQLite (bundled native library) | MIT; SQLite is public domain | ✅ |
 
 ---
 
@@ -178,6 +179,10 @@ WAPI (read-only, with the grid's saved read-only account and pinned certificate)
 
 Live state over WAPI (read-only): `pfr wapi-status --client <name> --grid <name> [--json]` shows members, nodes, HA state, service states, NIOS versions and hotfixes, with an overall status and a list of problems (a failed or offline service, a warning, an HA pair without exactly one active node). The grid is asked which fields each object offers (`_schema`) and only those are requested, so something a NIOS or WAPI version lacks appears as a note rather than an error. `pfr wapi-get --client <name> --grid <name> --object <type> [--fields <a,b>] [--filter <k=v>] [--schema]` prints the grid's raw answer to one read request, for checking field names against a real grid.
 
+Explore data (read-only SQL on a snapshot; no backup needed, or a backup file with `--file`): `pfr tables --client <name> --grid <name>` lists the tables, columns and row counts; `pfr query --client <name> --grid <name> "SELECT ..." [--limit <rows>] [--csv | --json]` runs a query (§12.6).
+
+Report templates (saved queries, plain JSON files in the `ReportTemplates` folder or `--templates <folder>`; §12.7): `pfr report-list`; `pfr report-show --name <name>`; `pfr report-save --name <name> [--description <text>] [--new-name <name>] ("SELECT ..." | --sql-file <file>)` (creates the template, or changes it if the name exists; anything left out stays as it was); `pfr report-run --name <name> (--client <name> --grid <name> | --file <backup>) [--limit <rows>] [--csv | --json]`; `pfr report-delete --name <name>`.
+
 ### 9.5 Later
 - Compare snapshots ("what changed since last time").
 - Findings tracked with status (open / accepted / remediated) — with Reports (§12).
@@ -236,12 +241,13 @@ Live state over WAPI (read-only): `pfr wapi-status --client <name> --grid <name>
 
 ## 12. Module 4 — Reports ✅ (first two reports)
 
-Renamed from "Health check". Holds **predefined reports** and a **data explorer**. Reports run on the grid currently open (picked with the header's Client › Grid switcher or Open backup…), from the stored snapshot — no reloading of backups.
+Renamed from "Health check". Holds **predefined reports**, a **data explorer** and the engineer's own **report templates** (saved queries). Reports run on the grid currently open (picked with the header's Client › Grid switcher or Open backup…), from the stored snapshot — no reloading of backups.
 
 ### 12.0 Available now ✅
 - **License expiry** — every license (per member/node and grid-wide) with expiry date and days left, soonest first; expired in red, expiring within a chosen window (30/60/90/180/365 days, default 90) in amber; each member's next expiry from NIOS's license summary (subscription licenses) included when it adds information.
 - **Dangling CNAMEs** — offline check described in §12.5; summary counts (dangling, takeover risks, not verified, resolving); filters to show resolving CNAMEs and targets outside the grid. Host aliases included; RPZ rules excluded.
-- **Explore data** — placeholder only. Planned: list the tables (object types) found in the backup XML, show their fields, and query against them.
+- **Explore data** ✅ — read-only SQL against the open grid's stored snapshot (§12.6).
+- **My reports** ✅ — saved Explore data queries, run as reports on the open grid (§12.7).
 
 ### 12.1 Engine
 - Rules with severity levels, defined in YAML/JSON files loaded at runtime.
@@ -270,6 +276,26 @@ Renamed from "Health check". Holds **predefined reports** and a **data explorer*
 - Failures: NXDOMAIN, NODATA, loops, chains over a maximum length (default 8), disabled targets, lame delegations (live); timeouts/SERVFAIL reported separately.
 - Also: **subdomain-takeover risk** (dangling CNAME to cloud/SaaS hostnames; editable provider list), CNAME at apex or beside other data, MX/NS/SRV pointing at a CNAME, long working chains.
 - Output: per CNAME with full chain, status, reason, severity and location; summary counts; NIOS CSV delete file (or WAPI RW); dated results for engagement comparison.
+
+### 12.6 Explore data ✅
+- **What it is:** read-only SQL against the stored snapshot of the open grid — no backup needed. GUI: Reports › *Explore data*. CLI: `pfr tables` and `pfr query`, which also work on a backup file with `--file`.
+- **How it works:** the snapshot is loaded into an in-memory SQLite database the first time the page is used for a grid. It is a throwaway copy: nothing is written to disk or to the stored snapshot, and it is discarded when another grid is opened.
+- **Tables:** `grid`, `members`, `nodes`, `member_services`, `licenses`, `network_views`, `dns_views`, `zones`, `zone_servers`, `networks`, `dhcp_ranges`, `failover` and `records`. Ids and keys are kept so tables join (`members.oid = member_services.member_oid`, `records.zone_key = zones.zone_key`, `dhcp_ranges.network_key = networks.network_key`...). Booleans are 0/1 and dates are `yyyy-MM-dd` text. The table browser lists every table with its row count and each column with a description.
+- **IP-aware functions**, because plain SQL can't order or search addresses: `ip_key(x)` orders addresses and prefixes numerically (IPv4 before IPv6), `cidr_contains(prefix, x)` and `ip_in_range(x, start, end)`.
+- **Safe by construction:** one statement at a time, and only `SELECT` (or `WITH`, `VALUES`, `EXPLAIN`); `INSERT`, `UPDATE`, `DELETE`, `CREATE`, `DROP`, `ATTACH`, `PRAGMA` and the like are refused with a clear message. The database is also opened read-only at the SQLite level, so the guard is not the only protection. A query that runs longer than 30 seconds is stopped. Words inside string literals, quoted names and comments are not mistaken for keywords. Errors are shown without SQLite's internal wording.
+- **Results:** capped at a row limit (GUI: 1,000 / 10,000 / 100,000; CLI: `--limit`, default 1,000) with a note when rows were cut off. In the GUI they are the standard table: search, sort (numbers and addresses sort properly), multi-select copy with headers. The CLI prints an aligned table, or `--csv` / `--json`.
+- **Examples:** a drop-down of ready-made queries (members and services, license expiry, record counts, networks with no DHCP range, A records inside a network, zones with no secondary, and more). Every example is run in the tests, so they stay in step with the schema.
+- **Not included yet:** querying raw backup object types the parser doesn't read (snapshots hold only the parsed inventory), and queries across several grids of a client (a natural fit with IPAM, §13).
+
+### 12.7 Report templates ✅
+- **What they are:** a saved Explore data query with a name and a description, run as a report on whichever grid is open. They are listed under **My reports** in the Reports module, below the built-in reports. Picking one runs it straight away (and again when another grid is opened) and shows the SQL it runs and the usual searchable, sortable, copyable table.
+- **Save:** Explore data › *Save as report…*. A name is required (up to 100 characters), the description is optional. Names are unique ignoring case and can't reuse the name of a built-in report. Only a single read-only statement can be saved.
+- **Edit:** *Edit* on a report opens it in Explore data with its SQL loaded and a banner saying which report is being edited. *Save report* updates it (renaming a report renames its file), *Save as a new report* makes a copy, and *Stop editing* returns to a fresh query.
+- **Delete:** *Delete report* (click twice to confirm) removes its file; if it was being edited, editing stops.
+- **Storage:** one plain JSON file per template in a `ReportTemplates` folder next to the application (`PFR_TEMPLATES_DIR` or the CLI's `--templates` for another folder). The SQL is stored as an array of lines, so files are readable, diff well, and can be written or edited in a text editor. Templates are **not encrypted** and need no master password, so they can be shared with a colleague by copying the files; they should not contain secrets or anything a client wouldn't want shared.
+- **Files from other people are checked, never trusted:** a file that can't be parsed, has no name or SQL, comes from a newer format, or whose SQL is not a single read-only statement is left out and listed as a problem under My reports. Whatever a template contains runs through the same read-only database as any query. *Reload* re-reads the folder after files are added, changed or removed outside the app.
+- **CLI:** `pfr report-list`, `report-show`, `report-save`, `report-run` and `report-delete` (§9.4).
+- **Not included yet:** parameters (values asked for when a report runs), running one report on every grid of a client, exporting results to a file from the GUI, and organising templates in folders or with tags.
 
 ---
 
@@ -376,11 +402,10 @@ Placement rules:
 | 7 | SNMP versions in use (v3 only, or v2c too) | §11 |
 | 8 | Default resolver for live CNAME checks | §12.5 |
 | 9 | Report branding (logo, company name) | §5 |
-| 10 | Explore data: query language/UI (and whether it reads the raw XML or the stored snapshot) | §12 |
-| 11 | IPAM: how the network views of different grids and the VRFs / routing instances of external sources are grouped into the tree's views (default: by name, editable) | §13.3 |
-| 12 | IPAM: include fixed addresses, reservations and leases | §13.4 |
-| 13 | IPAM import model: confirm the network and device fields | §13.5 |
-| 14 | Forward Networks and NetBrain: which exports/formats are available, and whether direct API pull is wanted | §13.5 |
-| 15 | IPAM: a device with no management address — reject it, or key it by its first interface address | §13.5 |
+| 10 | IPAM: how the network views of different grids and the VRFs / routing instances of external sources are grouped into the tree's views (default: by name, editable) | §13.3 |
+| 11 | IPAM: include fixed addresses, reservations and leases | §13.4 |
+| 12 | IPAM import model: confirm the network and device fields | §13.5 |
+| 13 | Forward Networks and NetBrain: which exports/formats are available, and whether direct API pull is wanted | §13.5 |
+| 14 | IPAM: a device with no management address — reject it, or key it by its first interface address | §13.5 |
 
-Resolved: first reports are license expiry and dangling CNAMEs; sample backup provided (lab grid, NIOS 9.0.8); client workspace storage (next to the app), encryption (master password) and snapshots (parsed inventory only).
+Resolved: first reports are license expiry and dangling CNAMEs; sample backup provided (lab grid, NIOS 9.0.8); client workspace storage (next to the app), encryption (master password) and snapshots (parsed inventory only); Explore data is SQL (SQLite) on the stored snapshot.

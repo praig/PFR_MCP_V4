@@ -7,5 +7,9 @@ internal static class TestWindows
 
     public static string NewDataFolder() => Path.Combine(Path.GetTempPath(), $"pfr-gui-data-{Guid.NewGuid():N}");
 
-    public static MainWindow New(string? dataFolder = null) => new(dataFolder ?? NewDataFolder(), Iterations);
+    /// <summary>A throwaway folder for report templates, so tests never touch the real one.</summary>
+    public static string NewTemplatesFolder() => Path.Combine(Path.GetTempPath(), $"pfr-gui-templates-{Guid.NewGuid():N}");
+
+    public static MainWindow New(string? dataFolder = null, string? templatesFolder = null) =>
+        new(dataFolder ?? NewDataFolder(), Iterations, templatesFolder ?? NewTemplatesFolder());
 }

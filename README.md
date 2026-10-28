@@ -28,7 +28,7 @@ across all columns; rows can be multi-selected and copied (Ctrl+C) with headers.
 The Reports tab runs on whichever grid is open: **License expiry** (expired and soon-to-expire
 licenses, with a selectable window) and **Dangling CNAMEs** (CNAME chains followed through the
 grid's own zones, flagging missing, address-less, disabled and looping targets plus possible
-subdomain-takeover risks). *Explore data* is a placeholder for now.
+subdomain-takeover risks). *Explore data* runs read-only SQL against the grid's snapshot (see below).
 
 ### Client data
 
@@ -116,6 +116,72 @@ pfr wapi-get --client "Acme Corp" --grid "Production" --object member --fields h
 The grid is asked which fields each object offers and only those are requested, so a field your NIOS or WAPI version
 lacks shows up as a note instead of an error. `wapi-get` prints the grid's raw answer to one read request (or an
 object's schema with `--schema`), which is the quickest way to check field names against your grid.
+
+### Explore data (SQL on a snapshot)
+
+Reports › **Explore data** lets you query the open grid's stored snapshot with SQL: no backup needed, nothing
+written anywhere, and the snapshot can't be changed (one `SELECT` at a time, on a throwaway in-memory copy).
+A table browser shows what you can query (`members`, `nodes`, `member_services`, `licenses`, `dns_views`, `zones`,
+`zone_servers`, `networks`, `dhcp_ranges`, `failover`, `records`...), with every column described, and a drop-down
+of example queries gets you started. Press **Ctrl+Enter** to run; results are searchable, sortable and copyable.
+
+SQL has no idea how addresses sort, so there are three helpers: `ip_key(x)` (order addresses and prefixes
+numerically), `cidr_contains(prefix, x)` and `ip_in_range(x, start, end)`.
+
+```sql
+-- DHCP ranges and who serves them, in address order
+SELECT m.host_name, r.start_address, r.end_address, r.association_type
+FROM dhcp_ranges r LEFT JOIN members m ON m.oid = r.member_oid
+ORDER BY m.host_name, ip_key(r.start_address);
+
+-- Every A record inside 10.0.0.0/8
+SELECT fqdn, value FROM records WHERE type = 'A' AND cidr_contains('10.0.0.0/8', value) ORDER BY ip_key(value);
+```
+
+From the command line:
+
+```bash
+pfr tables --client "Acme Corp" --grid "Production"
+pfr query  --client "Acme Corp" --grid "Production" "SELECT type, COUNT(*) FROM records GROUP BY type"
+pfr query  --file backup.bak --csv "SELECT fqdn, value FROM records WHERE type = 'A'" > a-records.csv
+```
+
+### Report templates (saved queries)
+
+Any Explore data query can be kept as a **report template**: *Save as report…* gives it a name and a description,
+and it then appears under **My reports** in the Reports list. Picking it runs it on whichever grid is open, so a
+query you write once can be re-run on any client's grid. *Edit* opens it back in Explore data (save to update it,
+rename it, or save a copy) and *Delete report* removes it.
+
+Templates are plain, readable JSON files, one per report, in a `ReportTemplates` folder next to the app (set
+`PFR_TEMPLATES_DIR`, or `--templates <folder>` on the command line, to keep them elsewhere):
+
+```json
+{
+  "format": 1,
+  "name": "Networks with no DHCP range",
+  "description": "Leaf networks that nobody serves.",
+  "sql": [
+    "SELECT n.prefix, n.comment",
+    "FROM networks n LEFT JOIN dhcp_ranges r ON r.network_key = n.network_key",
+    "WHERE n.is_container = 0 AND r.network_key IS NULL",
+    "ORDER BY ip_key(n.prefix)"
+  ]
+}
+```
+
+Because they are just files, you can copy them to a colleague, keep them in version control, or write them in a text
+editor (then press *Reload*). They are **not encrypted** and need no master password, so keep client names and
+anything sensitive out of them. A file whose SQL isn't a single read-only query is never run: it is skipped and
+listed as a problem instead.
+
+```bash
+pfr report-list
+pfr report-save --name "A records in 10/8" --description "Every A record in 10.0.0.0/8" \
+    "SELECT fqdn, value FROM records WHERE type = 'A' AND cidr_contains('10.0.0.0/8', value) ORDER BY ip_key(value)"
+pfr report-run  --name "A records in 10/8" --client "Acme Corp" --grid "Production" --csv > a-records.csv
+pfr report-delete --name "A records in 10/8"
+```
 
 Summarize a grid backup from the command line:
 

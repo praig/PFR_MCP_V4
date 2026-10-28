@@ -4,6 +4,7 @@ using Pfr.Core;
 using Pfr.Core.Clients;
 using Pfr.Core.Nios.Backup;
 using Pfr.Core.Nios.Model;
+using Pfr.Core.Query;
 using Pfr.Core.Storage;
 using Pfr.Core.Wapi;
 
@@ -54,11 +55,18 @@ public static class Program
                 "wapi-backup" => WapiBackup(cli),
                 "wapi-status" => WapiStatus(cli),
                 "wapi-get" => WapiGet(cli),
+                "query" => RunQuery(cli),
+                "tables" => ListTables(cli),
+                "report-list" => ListReports(cli),
+                "report-show" => ShowReport(cli),
+                "report-save" => SaveReport(cli),
+                "report-run" => RunReport(cli),
+                "report-delete" => DeleteReport(cli),
                 _ => Fail($"Unknown command: {cli.Command}\nRun 'pfr help' for usage.", 2),
             };
         }
         catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException
-                                       or System.Xml.XmlException or ArgumentException or InvalidOperationException or WapiException)
+                                       or System.Xml.XmlException or ArgumentException or InvalidOperationException or WapiException or QueryException)
         {
             return Fail($"Error: {ex.Message}");
         }
@@ -619,6 +627,186 @@ public static class Program
         return 0;
     }
 
+    // ---- Explore data -------------------------------------------------------------------
+
+    /// <summary>The inventory to query: a client grid's latest snapshot (no backup needed), or a backup file.</summary>
+    private static (GridInventory Inventory, string Label) InventoryToQuery(Args cli)
+    {
+        if (cli.Value("--file") is { } path)
+        {
+            if (!File.Exists(path)) throw new ArgumentException($"File not found: {path}");
+            var parsed = BackupParser.ParseFile(path);
+            BackupParser.EnsureGridName(parsed, Path.GetFileName(path));
+            return (parsed, Path.GetFileName(path));
+        }
+
+        if (cli.Value("--client") is not { } clientName || cli.Value("--grid") is not { } gridName)
+            throw new ArgumentException("Say which grid: --client <name> --grid <name>, or --file <backup>.");
+
+        var ws = Unlock(cli);
+        using var _ = ws.Store;
+        var client = FindClient(ws, clientName);
+        var grid = FindGrid(client, gridName);
+        return ws.LoadLatest(client.Id, grid.Id) is { } latest
+            ? (latest.Inventory, $"{client.Name} \u203a {grid.Name}, snapshot {latest.Snapshot.ImportedUtc.ToLocalTime():yyyy-MM-dd HH:mm}")
+            : throw new ArgumentException($"{client.Name} \u203a {grid.Name} has no snapshots yet.");
+    }
+
+    /// <summary>Runs a read-only SQL query against a snapshot and prints the result as a table, CSV or JSON.</summary>
+    private static int RunQuery(Args cli)
+    {
+        if (cli.Positional.Count != 1)
+        {
+            return Fail("Usage: pfr query (--client <name> --grid <name> | --file <backup>) \"SELECT ...\" [--limit <rows>] [--csv | --json]\n" +
+                        "Run 'pfr tables' with the same grid options to see the tables and columns.", 2);
+        }
+
+        var limit = 1000;
+        if (cli.Value("--limit") is { } text)
+        {
+            limit = int.TryParse(text, out var rows) && rows > 0
+                ? rows
+                : throw new ArgumentException("--limit must be a positive number of rows.");
+        }
+
+        var (inventory, label) = InventoryToQuery(cli);
+        using var database = SnapshotDatabase.Load(inventory);
+        var result = database.Execute(cli.Positional[0], limit);
+
+        if (cli.Has("--csv"))
+        {
+            Console.Write(result.ToCsv());
+        }
+        else if (cli.Has("--json"))
+        {
+            Console.WriteLine(result.ToJson());
+        }
+        else
+        {
+            Console.WriteLine(label);
+            Console.WriteLine();
+            Console.WriteLine(result.ToText());
+            return 0;
+        }
+
+        if (result.Truncated) Console.Error.WriteLine($"Note: only the first {limit:N0} rows were returned; use --limit for more.");
+        return 0;
+    }
+
+    /// <summary>Lists the tables and columns a query can use, with row counts for the chosen snapshot.</summary>
+    private static int ListTables(Args cli)
+    {
+        var (inventory, label) = InventoryToQuery(cli);
+        using var database = SnapshotDatabase.Load(inventory);
+
+        Console.WriteLine(label);
+        foreach (var table in database.Tables)
+        {
+            Console.WriteLine();
+            Console.WriteLine($"{table.Name}  ({table.RowCount:N0} rows)  {table.Description}");
+            var width = table.Columns.Max(c => c.Name.Length);
+            foreach (var column in table.Columns)
+                Console.WriteLine($"  {column.Name.PadRight(width)}  {column.SqlType,-7}  {column.Description}");
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("Functions: ip_key(x) orders addresses numerically; cidr_contains(prefix, x); ip_in_range(x, start, end).");
+        return 0;
+    }
+
+    // ---- Report templates -----------------------------------------------------------------
+
+    private static ReportTemplateStore OpenTemplates(Args cli) =>
+        new(TemplateLocation.Resolve(cli.Value("--templates")));
+
+    private static ReportTemplate FindTemplate(ReportTemplateStore store, string name) =>
+        store.Find(name) ?? throw new ArgumentException(
+            $"There is no report template named \"{name}\" in {store.Folder}. Run 'pfr report-list' to see them.");
+
+    private static int ListReports(Args cli)
+    {
+        var store = OpenTemplates(cli);
+        var problems = new List<string>();
+        var templates = store.List(problems);
+
+        if (templates.Count == 0)
+            Console.WriteLine($"No report templates in {store.Folder}. Save one with: pfr report-save --name \"My report\" \"SELECT ...\"");
+        foreach (var template in templates)
+            Console.WriteLine(template.Description.Length > 0 ? $"{template.Name}  -  {template.Description}" : template.Name);
+        foreach (var problem in problems) Console.Error.WriteLine($"Skipped {problem}");
+        return 0;
+    }
+
+    private static int ShowReport(Args cli)
+    {
+        if (cli.Value("--name") is not { } name) return Fail("Usage: pfr report-show --name <name>", 2);
+
+        var template = FindTemplate(OpenTemplates(cli), name);
+        Console.WriteLine(template.Name);
+        if (template.Description.Length > 0) Console.WriteLine(template.Description);
+        Console.WriteLine();
+        Console.WriteLine(template.Sql);
+        return 0;
+    }
+
+    /// <summary>Saves a new report template, or changes an existing one (its SQL, description or name).</summary>
+    private static int SaveReport(Args cli)
+    {
+        if (cli.Value("--name") is not { } name)
+        {
+            return Fail("Usage: pfr report-save --name <name> [--description <text>] [--new-name <name>] (\"SELECT ...\" | --sql-file <file>)\n" +
+                        "Creates the template, or changes it if the name exists (anything left out stays as it was).", 2);
+        }
+
+        var store = OpenTemplates(cli);
+        var existing = store.Find(name);
+        var sql = cli.Positional.Count == 1 ? cli.Positional[0]
+            : cli.Value("--sql-file") is { } file ? File.ReadAllText(file)
+            : null;
+        if (existing is null && sql is null)
+            return Fail($"There is no report template named \"{name}\". To create it, give the SQL: pfr report-save --name \"{name}\" \"SELECT ...\"", 2);
+
+        var template = existing is null
+            ? new ReportTemplate { Name = name }
+            : new ReportTemplate
+            {
+                Id = existing.Id, Name = existing.Name, Description = existing.Description,
+                Sql = existing.Sql, CreatedUtc = existing.CreatedUtc,
+            };
+        if (cli.Value("--new-name") is { } newName) template.Name = newName;
+        if (cli.Value("--description") is { } description) template.Description = description;
+        if (sql is not null) template.Sql = sql;
+
+        var saved = store.Save(template);
+        Console.WriteLine($"{(existing is null ? "Saved" : "Updated")} report template \"{saved.Name}\" ({Path.Combine(store.Folder, saved.Id + ".json")}).");
+        return 0;
+    }
+
+    /// <summary>Runs a report template on a client grid's latest snapshot (or a backup file); output as for query.</summary>
+    private static int RunReport(Args cli)
+    {
+        if (cli.Value("--name") is not { } name)
+        {
+            return Fail("Usage: pfr report-run --name <name> (--client <name> --grid <name> | --file <backup>) [--limit <rows>] [--csv | --json]", 2);
+        }
+
+        var template = FindTemplate(OpenTemplates(cli), name);
+        cli.Positional.Clear();
+        cli.Positional.Add(template.Sql);
+        return RunQuery(cli);
+    }
+
+    private static int DeleteReport(Args cli)
+    {
+        if (cli.Value("--name") is not { } name) return Fail("Usage: pfr report-delete --name <name>", 2);
+
+        var store = OpenTemplates(cli);
+        var template = FindTemplate(store, name);
+        store.Delete(template.Id);
+        Console.WriteLine($"Deleted report template \"{template.Name}\".");
+        return 0;
+    }
+
     // ---- Helpers ----------------------------------------------------------------
 
     private static string Count(int n, string noun) => $"{n} {noun}{(n == 1 ? "" : "s")}";
@@ -690,6 +878,17 @@ public static class Program
         Console.WriteLine("  wapi-get --client <n> --grid <n> --object <type> [--fields <a,b>] [--filter <k=v>] [--schema]");
         Console.WriteLine("                                               Show the grid's raw answer to one read request (to check field names)");
         Console.WriteLine();
+        Console.WriteLine("Explore data (read-only SQL on a snapshot; no backup needed, or use --file <backup>):");
+        Console.WriteLine("  tables --client <n> --grid <n>                 List the tables and columns you can query");
+        Console.WriteLine("  query --client <n> --grid <n> \"SELECT ...\" [--limit <rows>] [--csv | --json]");
+        Console.WriteLine();
+        Console.WriteLine("Report templates (saved queries; plain JSON files in the ReportTemplates folder, or --templates <folder>):");
+        Console.WriteLine("  report-list                                  List the report templates");
+        Console.WriteLine("  report-show --name <n>                       Show a template's description and SQL");
+        Console.WriteLine("  report-save --name <n> [--description <t>] [--new-name <n>] (\"SELECT ...\" | --sql-file <file>)");
+        Console.WriteLine("  report-run --name <n> (--client <n> --grid <n> | --file <backup>) [--limit <rows>] [--csv | --json]");
+        Console.WriteLine("  report-delete --name <n>                     Delete a template");
+        Console.WriteLine();
         Console.WriteLine("Options:");
         Console.WriteLine($"  --data <folder>   Client data folder (default: {DataLocation.FolderName} next to pfr, or ${DataLocation.EnvironmentVariable})");
         Console.WriteLine();
@@ -700,7 +899,7 @@ public static class Program
     /// <summary>Minimal argument parser: a command, --name value options, --flags and positionals.</summary>
     private sealed class Args
     {
-        private static readonly HashSet<string> Flags = ["--json", "--reveal", "--password", "--api-key", "--schema"];
+        private static readonly HashSet<string> Flags = ["--json", "--reveal", "--password", "--api-key", "--schema", "--csv"];
         private readonly Dictionary<string, string> _values = new(StringComparer.Ordinal);
         private readonly HashSet<string> _flags = new(StringComparer.Ordinal);
 
