@@ -47,6 +47,41 @@ pfr show --client "Acme Corp" --grid "Production"   # latest snapshot, no backup
 
 Set `PFR_MASTER_PASSWORD` for scripted use, and `PFR_DATA_DIR` (or `--data`) to use another folder.
 
+### Grid connections
+
+Each grid can also keep its WAPI connection — Grid Master address, port, optional WAPI version, and a
+read-only and an optional read-write account — encrypted with the same master password and stored with the
+client. In the desktop app it is the **Connection** tab next to a grid's snapshots (Clients › client › Grids).
+Passwords are masked unless you tick *Show passwords*, and are never written to snapshots or reports.
+
+```bash
+pfr connection-set --client "Acme Corp" --grid "Production" --address gm.acme.example --ro-user pfr-ro
+pfr connection-set --client "Acme Corp" --grid "Production" --rw-user pfr-rw   # add the optional read-write account
+pfr connection-show --client "Acme Corp" --grid "Production"                   # passwords hidden (--reveal to show)
+pfr connection-remove --client "Acme Corp" --grid "Production"
+```
+
+Passwords are never given on the command line: they are prompted without echo, or read from
+`PFR_RO_PASSWORD` / `PFR_RW_PASSWORD` for scripted use.
+
+### Client site logins and API keys
+
+A client can also keep logins and API keys for **its own sites and services** (portals, VPNs, cloud consoles,
+ticketing): a title, site, user id, password, API key and notes, any of the secrets optional. They are encrypted with
+the same master password and stored with the client; in the desktop app they are on the client page under
+**Logins & keys**, masked until you tick *Show*.
+
+```bash
+pfr login-set --client "Acme Corp" --title "Acme VPN portal" --url https://vpn.acme.example --user pat --password
+pfr login-set --client "Acme Corp" --title "Cloud API" --api-key            # an API-key-only entry
+pfr logins --client "Acme Corp"                                              # list; no secrets shown
+pfr login-show --client "Acme Corp" --title "Cloud API" [--reveal]
+pfr login-remove --client "Acme Corp" --title "Cloud API"
+```
+
+`--password` and `--api-key` prompt without echo (or read `PFR_LOGIN_PASSWORD` / `PFR_LOGIN_API_KEY`); secrets are
+never accepted as arguments.
+
 Summarize a grid backup from the command line:
 
 ```bash

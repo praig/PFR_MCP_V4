@@ -12,7 +12,9 @@ namespace Pfr.Core.Clients;
 /// <code>
 /// clients/&lt;client&gt;/client.pfr                         client, contacts, notes, grids and snapshot lists
 /// clients/&lt;client&gt;/log.pfr                            engagement log
+/// clients/&lt;client&gt;/logins.pfr                         logins and API keys for the client's own sites
 /// clients/&lt;client&gt;/grids/&lt;grid&gt;/snapshots/&lt;id&gt;.pfr    parsed inventory (gzip JSON)
+/// clients/&lt;client&gt;/grids/&lt;grid&gt;/connection.pfr        WAPI address and accounts (optional)
 /// </code>
 /// Every file is encrypted; folder names are random ids. Snapshots open straight
 /// from here, so switching grids or clients never needs the original backup.
@@ -26,9 +28,12 @@ public sealed class ClientWorkspace(SecureStore store)
 
     private static string ClientFile(string id) => $"{ClientsFolder}/{id}/client.pfr";
     private static string LogFile(string id) => $"{ClientsFolder}/{id}/log.pfr";
+    private static string LoginsFile(string id) => $"{ClientsFolder}/{id}/logins.pfr";
     private static string GridFolder(string clientId, string gridId) => $"{ClientsFolder}/{clientId}/grids/{gridId}";
     private static string SnapshotFile(string clientId, string gridId, string snapshotId) =>
         $"{GridFolder(clientId, gridId)}/snapshots/{snapshotId}.pfr";
+    private static string ConnectionFile(string clientId, string gridId) =>
+        $"{GridFolder(clientId, gridId)}/connection.pfr";
 
     // ---- Clients ---------------------------------------------------------
 
@@ -104,6 +109,32 @@ public sealed class ClientWorkspace(SecureStore store)
         SaveClient(client);
         Store.DeleteFolder(GridFolder(clientId, gridId));
     }
+
+    // ---- Connections -----------------------------------------------------
+
+    /// <summary>The saved WAPI connection of a grid, or null if none has been saved.</summary>
+    public GridConnection? GetConnection(string clientId, string gridId) =>
+        Store.Exists(ConnectionFile(clientId, gridId))
+            ? Store.ReadJson<GridConnection>(ConnectionFile(clientId, gridId))
+            : null;
+
+    public bool HasConnection(string clientId, string gridId) => Store.Exists(ConnectionFile(clientId, gridId));
+
+    /// <summary>
+    /// Saves (or replaces) a grid's connection after normalising and checking it.
+    /// Deleting the grid or the client deletes the connection with it.
+    /// </summary>
+    /// <exception cref="ArgumentException">The values are not usable, or the grid no longer exists; nothing is stored.</exception>
+    public GridConnection SaveConnection(string clientId, string gridId, GridConnection connection)
+    {
+        if (GetClient(clientId).FindGrid(gridId) is null) throw new ArgumentException("That grid no longer exists.");
+        connection.Normalize();
+        connection.UpdatedUtc = DateTimeOffset.UtcNow;
+        Store.WriteJson(ConnectionFile(clientId, gridId), connection);
+        return connection;
+    }
+
+    public void DeleteConnection(string clientId, string gridId) => Store.Delete(ConnectionFile(clientId, gridId));
 
     /// <summary>
     /// The grid a new backup belongs to: the one with the same grid name if there is
@@ -248,6 +279,40 @@ public sealed class ClientWorkspace(SecureStore store)
     {
         using var stream = File.OpenRead(path);
         return Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
+    }
+
+    // ---- Site logins and API keys ------------------------------------------
+
+    /// <summary>A client's logins and API keys, by title (empty if none have been saved).</summary>
+    public List<SiteLogin> GetLogins(string clientId) =>
+        (Store.Exists(LoginsFile(clientId)) ? Store.ReadJson<List<SiteLogin>>(LoginsFile(clientId)) : [])
+        .OrderBy(l => l.Title, StringComparer.OrdinalIgnoreCase).ToList();
+
+    /// <summary>
+    /// Adds a login, or replaces the one with the same id, after tidying and checking it.
+    /// Titles are unique per client (ignoring case). Deleting the client deletes its logins with it.
+    /// </summary>
+    /// <exception cref="ArgumentException">No title, a title already in use, or the client no longer exists; nothing is stored.</exception>
+    public SiteLogin SaveLogin(string clientId, SiteLogin login)
+    {
+        if (!Store.Exists(ClientFile(clientId))) throw new ArgumentException("That client no longer exists.");
+        login.Normalize();
+
+        var logins = GetLogins(clientId);
+        if (logins.Any(l => l.Id != login.Id && string.Equals(l.Title, login.Title, StringComparison.OrdinalIgnoreCase)))
+            throw new ArgumentException($"This client already has a login titled \"{login.Title}\".");
+
+        login.UpdatedUtc = DateTimeOffset.UtcNow;
+        logins.RemoveAll(l => l.Id == login.Id);
+        logins.Add(login);
+        Store.WriteJson(LoginsFile(clientId), logins);
+        return login;
+    }
+
+    public void DeleteLogin(string clientId, string loginId)
+    {
+        var logins = GetLogins(clientId);
+        if (logins.RemoveAll(l => l.Id == loginId) > 0) Store.WriteJson(LoginsFile(clientId), logins);
     }
 
     // ---- Engagement log --------------------------------------------------

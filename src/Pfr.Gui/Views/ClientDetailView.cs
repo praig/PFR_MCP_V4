@@ -25,6 +25,8 @@ public sealed class ClientDetailView : UserControl
 
     private ListBox _gridList = null!;
     private ListBox _snapshotList = null!;
+    private GridConnectionEditor _connection = null!;
+    private SiteLoginsEditor _logins = null!;
     private TextBox _gridName = null!;
     private TextBlock _gridMessage = null!;
     private ListBox _logList = null!;
@@ -42,6 +44,7 @@ public sealed class ClientDetailView : UserControl
                 new TabItem { Header = "Details", Content = BuildDetails() },
                 new TabItem { Header = "Grids", Content = BuildGrids() },
                 new TabItem { Header = "Engagement log", Content = BuildLog() },
+                new TabItem { Header = "Logins & keys", Content = BuildLogins() },
             },
         };
         Content = new DockPanel { Margin = new Thickness(16, 8), Children = { _tabs } };
@@ -60,6 +63,16 @@ public sealed class ClientDetailView : UserControl
     public IReadOnlyList<SnapshotInfo> Snapshots => Client.AllSnapshots.ToList();
 
     public ClientGrid? SelectedGrid => (_gridList.SelectedItem as GridItem)?.Grid;
+
+    /// <summary>The Connection tab's form for the selected grid.</summary>
+    public GridConnectionEditor ConnectionEditor => _connection;
+
+    /// <summary>The "Logins &amp; keys" tab (the client's own sites and API keys).</summary>
+    public SiteLoginsEditor LoginsEditor => _logins;
+
+    /// <summary>Selects a grid in the Grids tab (showing its snapshots and connection).</summary>
+    public void SelectGrid(string gridId) =>
+        _gridList.SelectedItem = (_gridList.ItemsSource as IEnumerable<GridItem>)?.FirstOrDefault(i => i.Grid.Id == gridId);
 
     public void SelectTab(int index) => _tabs.SelectedIndex = index;
 
@@ -245,6 +258,7 @@ public sealed class ClientDetailView : UserControl
 
     private Control BuildGrids()
     {
+        _connection = new GridConnectionEditor(_workspace);
         _gridList = new ListBox
         {
             Background = Brushes.Transparent,
@@ -295,6 +309,7 @@ public sealed class ClientDetailView : UserControl
             var grid = SelectedGrid;
             _snapshotList.ItemsSource = grid?.Snapshots.OrderByDescending(s => s.ImportedUtc).ToList();
             _gridName.Text = grid?.Name ?? "";
+            _connection.Bind(Client.Id, grid);
         };
         _gridList.DoubleTapped += async (_, _) =>
         {
@@ -386,8 +401,16 @@ public sealed class ClientDetailView : UserControl
 
         var split = new Grid { ColumnDefinitions = new ColumnDefinitions("360,16,*") };
         split.Children.Add(gridsPane);
-        Grid.SetColumn(snapshotsPane, 2);
-        split.Children.Add(snapshotsPane);
+        var detailTabs = new TabControl
+        {
+            Items =
+            {
+                new TabItem { Header = "Snapshots", Content = snapshotsPane },
+                new TabItem { Header = "Connection", Content = _connection },
+            },
+        };
+        Grid.SetColumn(detailTabs, 2);
+        split.Children.Add(detailTabs);
 
         var top = new StackPanel
         {
@@ -575,6 +598,14 @@ public sealed class ClientDetailView : UserControl
     }
 
     private sealed record GridItem(ClientGrid Grid);
+
+    // ---- Logins and API keys ------------------------------------------------
+
+    private Control BuildLogins()
+    {
+        _logins = new SiteLoginsEditor(_workspace, Client.Id);
+        return _logins;
+    }
 
     // ---- Engagement log ----------------------------------------------------
 

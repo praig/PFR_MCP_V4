@@ -13,6 +13,14 @@ public static class Program
     /// <summary>Master password for scripted use; otherwise it is prompted without echo.</summary>
     public const string PasswordVariable = "PFR_MASTER_PASSWORD";
 
+    /// <summary>Grid account passwords for scripted use; otherwise they are prompted without echo.</summary>
+    public const string ReadOnlyPasswordVariable = "PFR_RO_PASSWORD";
+    public const string ReadWritePasswordVariable = "PFR_RW_PASSWORD";
+
+    /// <summary>Secrets for client site logins, for scripted use; otherwise they are prompted without echo.</summary>
+    public const string LoginPasswordVariable = "PFR_LOGIN_PASSWORD";
+    public const string LoginApiKeyVariable = "PFR_LOGIN_API_KEY";
+
     public static int Main(string[] args)
     {
         var cli = new Args(args);
@@ -34,6 +42,13 @@ public static class Program
                 "import" => Import(cli),
                 "grids" => ListGrids(cli),
                 "show" => Show(cli),
+                "connection-set" => SetConnection(cli),
+                "connection-show" => ShowConnection(cli),
+                "connection-remove" => RemoveConnection(cli),
+                "logins" => ListLogins(cli),
+                "login-set" => SetLogin(cli),
+                "login-show" => ShowLogin(cli),
+                "login-remove" => RemoveLogin(cli),
                 _ => Fail($"Unknown command: {cli.Command}\nRun 'pfr help' for usage.", 2),
             };
         }
@@ -193,7 +208,7 @@ public static class Program
 
         foreach (var g in client.Grids.OrderBy(g => g.Name, StringComparer.OrdinalIgnoreCase))
         {
-            Console.WriteLine(g.Name);
+            Console.WriteLine(ws.HasConnection(client.Id, g.Id) ? $"{g.Name}   [connection saved]" : g.Name);
             foreach (var s in g.Snapshots.OrderByDescending(s => s.ImportedUtc))
             {
                 var label = s.Label.Length > 0 ? $"  \"{s.Label}\"" : "";
@@ -212,9 +227,7 @@ public static class Program
         var ws = Unlock(cli);
         using var _ = ws.Store;
         var client = FindClient(ws, clientName);
-        var grid = client.Grids.FirstOrDefault(g => string.Equals(g.Name, gridName, StringComparison.OrdinalIgnoreCase))
-                   ?? throw new ArgumentException(
-                       $"{client.Name} has no grid named \"{gridName}\". Grids: {string.Join(", ", client.Grids.Select(g => g.Name).Order(StringComparer.OrdinalIgnoreCase))}");
+        var grid = FindGrid(client, gridName);
         if (ws.LoadLatest(client.Id, grid.Id) is not { } latest)
             return Fail($"{client.Name} › {grid.Name} has no snapshots yet.");
 
@@ -227,6 +240,224 @@ public static class Program
     private static Client FindClient(ClientWorkspace ws, string name) =>
         ws.ListClients().FirstOrDefault(c => string.Equals(c.Name, name.Trim(), StringComparison.OrdinalIgnoreCase))
         ?? throw new ArgumentException($"No client named \"{name}\". Run 'pfr clients' to list them.");
+
+    private static ClientGrid FindGrid(Client client, string name) =>
+        client.Grids.FirstOrDefault(g => string.Equals(g.Name, name.Trim(), StringComparison.OrdinalIgnoreCase))
+        ?? throw new ArgumentException(
+            $"{client.Name} has no grid named \"{name}\". Grids: {string.Join(", ", client.Grids.Select(g => g.Name).Order(StringComparer.OrdinalIgnoreCase))}");
+
+    // ---- Grid connections ------------------------------------------------------
+
+    private const string ConnectionSetUsage =
+        "Usage: pfr connection-set --client <name> --grid <name> [--address <host>] [--port <n>] [--wapi-version <v|auto>]\n" +
+        "                          [--ro-user <id>] [--rw-user <id>]\n" +
+        "Passwords are never given on the command line: they are prompted, or read from " +
+        ReadOnlyPasswordVariable + " / " + ReadWritePasswordVariable + ".";
+
+    /// <summary>Creates or updates a grid's connection; options left out keep their saved values.</summary>
+    private static int SetConnection(Args cli)
+    {
+        if (cli.Value("--client") is not { } clientName || cli.Value("--grid") is not { } gridName)
+            return Fail(ConnectionSetUsage, 2);
+
+        var ws = Unlock(cli);
+        using var _ = ws.Store;
+        var client = FindClient(ws, clientName);
+        var grid = FindGrid(client, gridName);
+        var connection = ws.GetConnection(client.Id, grid.Id) ?? new GridConnection();
+
+        if (cli.Value("--address") is { } address) connection.Address = address;
+        if (cli.Value("--port") is { } port)
+        {
+            connection.Port = int.TryParse(port, out var number)
+                ? number
+                : throw new ArgumentException($"\"{port}\" is not a valid port.");
+        }
+        if (cli.Value("--wapi-version") is { } version) connection.WapiVersion = version;
+        if (cli.Value("--ro-user") is { } roUser)
+        {
+            connection.ReadOnly = new Credential
+            {
+                Username = roUser,
+                Password = AccountPassword(ReadOnlyPasswordVariable, "read-only", roUser),
+            };
+        }
+        if (cli.Value("--rw-user") is { } rwUser)
+        {
+            connection.ReadWrite = new Credential
+            {
+                Username = rwUser,
+                Password = AccountPassword(ReadWritePasswordVariable, "read-write", rwUser),
+            };
+        }
+
+        ws.SaveConnection(client.Id, grid.Id, connection);
+        Console.WriteLine($"Saved the connection for {client.Name} › {grid.Name}.");
+        PrintConnection(connection, reveal: false);
+        return 0;
+    }
+
+    private static string AccountPassword(string variable, string kind, string user)
+    {
+        var password = Environment.GetEnvironmentVariable(variable);
+        return string.IsNullOrEmpty(password) ? ReadPassword($"Password for {kind} account {user}: ") : password;
+    }
+
+    /// <summary>Shows a grid's connection. Passwords are hidden unless <c>--reveal</c> is given.</summary>
+    private static int ShowConnection(Args cli)
+    {
+        if (cli.Value("--client") is not { } clientName || cli.Value("--grid") is not { } gridName)
+            return Fail("Usage: pfr connection-show --client <name> --grid <name> [--reveal]", 2);
+
+        var ws = Unlock(cli);
+        using var _ = ws.Store;
+        var client = FindClient(ws, clientName);
+        var grid = FindGrid(client, gridName);
+        if (ws.GetConnection(client.Id, grid.Id) is not { } connection)
+        {
+            return Fail($"{client.Name} › {grid.Name} has no saved connection. Add one with: " +
+                        $"pfr connection-set --client \"{client.Name}\" --grid \"{grid.Name}\" --address <host> --ro-user <id>");
+        }
+
+        Console.WriteLine($"{client.Name} › {grid.Name}");
+        PrintConnection(connection, cli.Has("--reveal"));
+        return 0;
+    }
+
+    private static int RemoveConnection(Args cli)
+    {
+        if (cli.Value("--client") is not { } clientName || cli.Value("--grid") is not { } gridName)
+            return Fail("Usage: pfr connection-remove --client <name> --grid <name>", 2);
+
+        var ws = Unlock(cli);
+        using var _ = ws.Store;
+        var client = FindClient(ws, clientName);
+        var grid = FindGrid(client, gridName);
+        if (!ws.HasConnection(client.Id, grid.Id)) return Fail($"{client.Name} › {grid.Name} has no saved connection.");
+
+        ws.DeleteConnection(client.Id, grid.Id);
+        Console.WriteLine($"Removed the saved connection for {client.Name} › {grid.Name}.");
+        return 0;
+    }
+
+    private static void PrintConnection(GridConnection c, bool reveal)
+    {
+        Console.WriteLine($"  Address:       {c.Address}{(c.Port == GridConnection.DefaultPort ? "" : $" (port {c.Port})")}");
+        Console.WriteLine($"  WAPI version:  {c.WapiVersion ?? "detected on connect"}");
+        Console.WriteLine($"  Read-only:     {Describe(c.ReadOnly, reveal)}");
+        Console.WriteLine($"  Read-write:    {Describe(c.ReadWrite, reveal)}");
+        Console.WriteLine($"  Saved:         {c.UpdatedUtc.ToLocalTime():yyyy-MM-dd HH:mm}");
+    }
+
+    private static string Describe(Credential? account, bool reveal) =>
+        account is null ? "not set" : reveal ? $"{account.Username} / {account.Password}" : $"{account.Username}  (password saved)";
+
+    // ---- Client site logins and API keys ----------------------------------------
+
+    private const string LoginSetUsage =
+        "Usage: pfr login-set --client <name> --title <title> [--url <site>] [--user <id>] [--notes <text>] [--new-title <title>]\n" +
+        "                     [--password] [--api-key]\n" +
+        "Creates the login, or updates it if the title exists (options left out keep their saved values).\n" +
+        "--password and --api-key prompt for the secret without echo (Enter alone clears it), or read " +
+        LoginPasswordVariable + " / " + LoginApiKeyVariable + ". Secrets are never given on the command line.";
+
+    private static SiteLogin? FindLogin(ClientWorkspace ws, Client client, string title) =>
+        ws.GetLogins(client.Id).FirstOrDefault(l => string.Equals(l.Title, title.Trim(), StringComparison.OrdinalIgnoreCase));
+
+    private static int ListLogins(Args cli)
+    {
+        if (cli.Value("--client") is not { } clientName) return Fail("Usage: pfr logins --client <name>", 2);
+        var ws = Unlock(cli);
+        using var _ = ws.Store;
+        var client = FindClient(ws, clientName);
+        var logins = ws.GetLogins(client.Id);
+        if (logins.Count == 0)
+        {
+            Console.WriteLine($"{client.Name} has no saved logins. Add one with: pfr login-set --client \"{client.Name}\" --title <title> --url <site> --user <id> --password");
+            return 0;
+        }
+
+        Console.WriteLine($"{client.Name}: {Count(logins.Count, "login")}");
+        foreach (var l in logins)
+        {
+            var saved = new List<string>();
+            if (l.Username.Length > 0) saved.Add($"user {l.Username}");
+            if (l.Password.Length > 0) saved.Add("password");
+            if (l.ApiKey.Length > 0) saved.Add("API key");
+            Console.WriteLine($"  {l.Title,-30} {l.Url,-36} {string.Join(", ", saved)}");
+        }
+        return 0;
+    }
+
+    private static int SetLogin(Args cli)
+    {
+        if (cli.Value("--client") is not { } clientName || cli.Value("--title") is not { } title)
+            return Fail(LoginSetUsage, 2);
+
+        var ws = Unlock(cli);
+        using var _ = ws.Store;
+        var client = FindClient(ws, clientName);
+        var existing = FindLogin(ws, client, title);
+        var login = existing ?? new SiteLogin { Title = title };
+
+        if (cli.Value("--new-title") is { } newTitle) login.Title = newTitle;
+        if (cli.Value("--url") is { } url) login.Url = url;
+        if (cli.Value("--user") is { } user) login.Username = user;
+        if (cli.Value("--notes") is { } notes) login.Notes = notes;
+        if (cli.Has("--password")) login.Password = SecretValue(LoginPasswordVariable, $"Password for {login.Title.Trim()}: ");
+        if (cli.Has("--api-key")) login.ApiKey = SecretValue(LoginApiKeyVariable, $"API key for {login.Title.Trim()}: ");
+
+        ws.SaveLogin(client.Id, login);
+        Console.WriteLine($"{(existing is null ? "Added" : "Updated")} login \"{login.Title}\" for {client.Name}.");
+        return 0;
+    }
+
+    private static string SecretValue(string variable, string prompt)
+    {
+        var value = Environment.GetEnvironmentVariable(variable);
+        return string.IsNullOrEmpty(value) ? ReadPassword(prompt) : value;
+    }
+
+    /// <summary>Shows a login. Secrets are hidden unless <c>--reveal</c> is given.</summary>
+    private static int ShowLogin(Args cli)
+    {
+        if (cli.Value("--client") is not { } clientName || cli.Value("--title") is not { } title)
+            return Fail("Usage: pfr login-show --client <name> --title <title> [--reveal]", 2);
+
+        var ws = Unlock(cli);
+        using var _ = ws.Store;
+        var client = FindClient(ws, clientName);
+        var login = FindLogin(ws, client, title)
+                    ?? throw new ArgumentException($"{client.Name} has no login titled \"{title}\". Run 'pfr logins --client \"{client.Name}\"' to list them.");
+        var reveal = cli.Has("--reveal");
+
+        Console.WriteLine($"{client.Name} › {login.Title}");
+        Console.WriteLine($"  Site:      {(login.Url.Length > 0 ? login.Url : "-")}");
+        Console.WriteLine($"  User id:   {(login.Username.Length > 0 ? login.Username : "-")}");
+        Console.WriteLine($"  Password:  {Secret(login.Password, reveal)}");
+        Console.WriteLine($"  API key:   {Secret(login.ApiKey, reveal)}");
+        if (login.Notes.Length > 0) Console.WriteLine($"  Notes:     {login.Notes}");
+        Console.WriteLine($"  Saved:     {login.UpdatedUtc.ToLocalTime():yyyy-MM-dd HH:mm}");
+        return 0;
+    }
+
+    private static string Secret(string value, bool reveal) =>
+        value.Length == 0 ? "-" : reveal ? value : "(saved)";
+
+    private static int RemoveLogin(Args cli)
+    {
+        if (cli.Value("--client") is not { } clientName || cli.Value("--title") is not { } title)
+            return Fail("Usage: pfr login-remove --client <name> --title <title>", 2);
+
+        var ws = Unlock(cli);
+        using var _ = ws.Store;
+        var client = FindClient(ws, clientName);
+        var login = FindLogin(ws, client, title) ?? throw new ArgumentException($"{client.Name} has no login titled \"{title}\".");
+
+        ws.DeleteLogin(client.Id, login.Id);
+        Console.WriteLine($"Removed login \"{login.Title}\" from {client.Name}.");
+        return 0;
+    }
 
     // ---- Helpers ----------------------------------------------------------------
 
@@ -278,6 +509,19 @@ public static class Program
         Console.WriteLine("  grids --client <name>                         List a client's grids and snapshots");
         Console.WriteLine("  show --client <name> --grid <name> [--json]   Summarize a grid's latest snapshot");
         Console.WriteLine();
+        Console.WriteLine("Grid connections (WAPI address and accounts, stored encrypted with the client):");
+        Console.WriteLine("  connection-set --client <n> --grid <n> [--address <host>] [--port <n>] [--wapi-version <v>]");
+        Console.WriteLine("                 [--ro-user <id>] [--rw-user <id>]   Passwords are prompted, or set " + ReadOnlyPasswordVariable + " / " + ReadWritePasswordVariable);
+        Console.WriteLine("  connection-show --client <n> --grid <n> [--reveal]   Show a connection (passwords hidden unless --reveal)");
+        Console.WriteLine("  connection-remove --client <n> --grid <n>    Delete a grid's saved connection");
+        Console.WriteLine();
+        Console.WriteLine("Client site logins and API keys (portals, VPNs, cloud consoles...; stored encrypted with the client):");
+        Console.WriteLine("  logins --client <n>                          List a client's logins (no secrets shown)");
+        Console.WriteLine("  login-set --client <n> --title <t> [--url <site>] [--user <id>] [--notes <text>] [--new-title <t>]");
+        Console.WriteLine("            [--password] [--api-key]           Add or update; secrets are prompted, or set " + LoginPasswordVariable + " / " + LoginApiKeyVariable);
+        Console.WriteLine("  login-show --client <n> --title <t> [--reveal]   Show a login (secrets hidden unless --reveal)");
+        Console.WriteLine("  login-remove --client <n> --title <t>        Delete a login");
+        Console.WriteLine();
         Console.WriteLine("Options:");
         Console.WriteLine($"  --data <folder>   Client data folder (default: {DataLocation.FolderName} next to pfr, or ${DataLocation.EnvironmentVariable})");
         Console.WriteLine();
@@ -288,7 +532,7 @@ public static class Program
     /// <summary>Minimal argument parser: a command, --name value options, --flags and positionals.</summary>
     private sealed class Args
     {
-        private static readonly HashSet<string> Flags = ["--json"];
+        private static readonly HashSet<string> Flags = ["--json", "--reveal", "--password", "--api-key"];
         private readonly Dictionary<string, string> _values = new(StringComparer.Ordinal);
         private readonly HashSet<string> _flags = new(StringComparer.Ordinal);
 
