@@ -10,12 +10,15 @@ public static class BackupParser
 {
     /// <summary>
     /// The only onedb.xml object types the parser reads. Everything else
-    /// (certificates, keys, admin accounts, licenses, logs…) is skipped unread.
+    /// (certificates, keys, licenses' keys, logs, per-group password policy, authentication servers…) is skipped
+    /// unread. Administrator accounts are read for their names, groups, roles and permissions only; their
+    /// passwords and keys are dropped by <see cref="SensitiveData"/> before they reach the parser.
     /// </summary>
     public static readonly IReadOnlyList<string> AllowedTypes =
     [
         .. MemberServices.RequiredTypes,
         .. LicenseParser.RequiredTypes,
+        .. AdminParser.RequiredTypes,
         "one.cluster",
         "one.virtual_node",
         "one.physical_node",
@@ -100,6 +103,7 @@ public static class BackupParser
         AddRecords(inv, byType);
         LicenseParser.Apply(inv, byType);
         MemberServices.Apply(inv, byType);
+        AdminParser.Apply(inv, byType);
         return inv;
     }
 

@@ -183,6 +183,44 @@ pfr report-run  --name "A records in 10/8" --client "Acme Corp" --grid "Producti
 pfr report-delete --name "A records in 10/8"
 ```
 
+### Parameters and exporting
+
+Put `:name` in the SQL wherever a value should be asked for, and Explore data shows an input box for it. The value
+is handed to the query as data (never pasted into the SQL), so what is typed can't change what the query does; a blank
+value is NULL, which lets a filter be optional:
+
+```sql
+SELECT fqdn, value FROM records
+WHERE type = :type AND cidr_contains(:network, value) AND (:zone IS NULL OR zone_key LIKE :zone)
+ORDER BY ip_key(value);
+```
+
+*Save as report…* turns each `:name` into a declared parameter of the report. A small editor lets you give it a
+label, a description, a type (text, number, or a choice from a list of options), a default, and whether it is
+required. Open the report under My reports and it shows a form with the defaults filled in; it runs by itself when
+every required value is there, and otherwise waits for you to fill them in and click Run. In the file the
+parameters look like this:
+
+```json
+"parameters": [
+  { "name": "type", "label": "Record type", "type": "choice", "options": ["A", "AAAA"], "default": "A" },
+  { "name": "network", "label": "Network", "description": "Only records inside it.", "default": "10.0.0.0/8" },
+  { "name": "zone", "label": "Zone key contains", "required": false }
+]
+```
+
+**Export…** (on Explore data and on every report) saves the results as CSV or JSON, whichever the file name ends
+in. CSV files open correctly in Excel (accents included), and text that starts with `=`, `+`, `-` or `@` gets a
+leading apostrophe, because DNS names and record data come from outside and a spreadsheet would otherwise run such a
+cell as a formula. On the command line:
+
+```bash
+pfr report-run --name "A in a network" --client "Acme Corp" --grid "Production" \
+    --param network=10.20.0.0/16 --param type=A --out a-records.csv --excel-safe
+pfr query --file backup.bak --param host=gm.example.com --json \
+    "SELECT * FROM members WHERE host_name = :host"
+```
+
 Summarize a grid backup from the command line:
 
 ```bash

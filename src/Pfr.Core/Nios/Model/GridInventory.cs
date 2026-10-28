@@ -1,7 +1,8 @@
 namespace Pfr.Core.Nios.Model;
 
 /// <summary>
-/// Everything parsed from one grid backup. Contains no secrets.
+/// Everything parsed from one grid backup. Contains no secrets: administrator accounts are included by name,
+/// group and permissions, but never their passwords, hashes, keys or certificates.
 /// </summary>
 public sealed class GridInventory
 {
@@ -22,6 +23,15 @@ public sealed class GridInventory
     public List<FailoverAssociation> FailoverAssociations { get; } = [];
     public List<DnsRecord> Records { get; } = [];
     public List<GridLicense> Licenses { get; } = [];
+
+    // Administrators. Names, flags and relationships only; never passwords, hashes, keys or certificates.
+    public List<AdminGroup> AdminGroups { get; } = [];
+    public List<AdminUser> AdminUsers { get; } = [];
+    public List<AdminRole> AdminRoles { get; } = [];
+    public List<AdminGroupRole> AdminGroupRoles { get; } = [];
+    public List<AdminPermission> AdminPermissions { get; } = [];
+    public List<AdminAccess> AdminAccessRights { get; } = [];
+    public List<AdminAuthMethod> AdminAuthMethods { get; } = [];
 
     /// <summary>Host objects in DNS zones (each also appears as A/AAAA/PTR/CNAME records).</summary>
     public int HostCount { get; set; }

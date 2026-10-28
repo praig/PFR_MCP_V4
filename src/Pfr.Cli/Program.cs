@@ -653,7 +653,14 @@ public static class Program
     }
 
     /// <summary>Runs a read-only SQL query against a snapshot and prints the result as a table, CSV or JSON.</summary>
-    private static int RunQuery(Args cli)
+    private static int RunQuery(Args cli) => RunQuery(cli, null);
+
+    /// <summary>
+    /// Runs the SQL given as the one argument and prints the result. <paramref name="definitions"/> are a report
+    /// template's parameters (their defaults apply); null for a query typed on the command line, where every
+    /// :name in the SQL is text taken from --param name=value, or NULL if not given.
+    /// </summary>
+    private static int RunQuery(Args cli, IReadOnlyList<ReportParameter>? definitions)
     {
         if (cli.Positional.Count != 1)
         {
@@ -671,11 +678,24 @@ public static class Program
 
         var (inventory, label) = InventoryToQuery(cli);
         using var database = SnapshotDatabase.Load(inventory);
-        var result = database.Execute(cli.Positional[0], limit);
+        var sql = cli.Positional[0];
+        var supplied = ParseParameterValues(cli);
+        var bound = definitions is not null
+            ? QueryParameters.Resolve(definitions, supplied)
+            : QueryParameters.Bind(QueryParameters.FindNames(sql).Select(QueryParameters.AdHoc).ToList(), supplied);
+        var result = database.Execute(sql, limit, parameters: bound);
+
+        if (cli.Value("--out") is { } outPath)
+        {
+            var format = ResultExport.Write(result, outPath, spreadsheetSafe: cli.Has("--excel-safe"));
+            Console.Error.WriteLine($"Wrote {result.Rows.Count:N0} row{(result.Rows.Count == 1 ? "" : "s")} to {Path.GetFullPath(outPath)} as {format}.");
+            if (result.Truncated) Console.Error.WriteLine($"Note: only the first {limit:N0} rows were returned; use --limit for more.");
+            return 0;
+        }
 
         if (cli.Has("--csv"))
         {
-            Console.Write(result.ToCsv());
+            Console.Write(result.ToCsv(spreadsheetSafe: cli.Has("--excel-safe")));
         }
         else if (cli.Has("--json"))
         {
@@ -745,6 +765,18 @@ public static class Program
         Console.WriteLine(template.Name);
         if (template.Description.Length > 0) Console.WriteLine(template.Description);
         Console.WriteLine();
+        if (template.Parameters.Count > 0)
+        {
+            Console.WriteLine("Parameters (give a value with --param name=value):");
+            foreach (var p in template.Parameters)
+            {
+                var kind = p.Type == ParameterType.Choice ? $"choice: {string.Join("/", p.Options)}" : p.Type.ToString().ToLowerInvariant();
+                var required = p.Required ? "required" : "optional";
+                var start = p.Default.Length > 0 ? $", default {p.Default}" : "";
+                Console.WriteLine($"  :{p.Name}  {p.DisplayLabel}  ({kind}, {required}{start})");
+            }
+            Console.WriteLine();
+        }
         Console.WriteLine(template.Sql);
         return 0;
     }
@@ -772,10 +804,24 @@ public static class Program
             {
                 Id = existing.Id, Name = existing.Name, Description = existing.Description,
                 Sql = existing.Sql, CreatedUtc = existing.CreatedUtc,
+                Parameters = existing.Parameters.Select(p => p.Clone()).ToList(),
             };
         if (cli.Value("--new-name") is { } newName) template.Name = newName;
         if (cli.Value("--description") is { } description) template.Description = description;
         if (sql is not null) template.Sql = sql;
+
+        // Every :name in the SQL is a parameter. Existing ones keep their description; --param name=value sets a default.
+        var defaults = ParseParameterValues(cli);
+        var parameters = QueryParameters.FindNames(template.Sql)
+            .Select(n => (template.Parameters.FirstOrDefault(p => p.Name == n) ?? new ReportParameter { Name = n }).Clone())
+            .ToList();
+        foreach (var (key, value) in defaults)
+        {
+            var target = parameters.FirstOrDefault(p => p.Name == key)
+                         ?? throw new ArgumentException($"The SQL has no parameter :{key}.");
+            target.Default = value;
+        }
+        template.Parameters = parameters;
 
         var saved = store.Save(template);
         Console.WriteLine($"{(existing is null ? "Saved" : "Updated")} report template \"{saved.Name}\" ({Path.Combine(store.Folder, saved.Id + ".json")}).");
@@ -793,7 +839,7 @@ public static class Program
         var template = FindTemplate(OpenTemplates(cli), name);
         cli.Positional.Clear();
         cli.Positional.Add(template.Sql);
-        return RunQuery(cli);
+        return RunQuery(cli, template.Parameters);
     }
 
     private static int DeleteReport(Args cli)
@@ -805,6 +851,19 @@ public static class Program
         store.Delete(template.Id);
         Console.WriteLine($"Deleted report template \"{template.Name}\".");
         return 0;
+    }
+
+    /// <summary>The --param name=value options as a dictionary (a leading : @ or $ on the name is allowed).</summary>
+    private static Dictionary<string, string> ParseParameterValues(Args cli)
+    {
+        var values = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var item in cli.All("--param"))
+        {
+            var equals = item.IndexOf('=');
+            if (equals <= 0) throw new ArgumentException($"--param needs name=value, not \"{item}\".");
+            values[item[..equals].Trim().TrimStart(':', '@', '$')] = item[(equals + 1)..];
+        }
+        return values;
     }
 
     // ---- Helpers ----------------------------------------------------------------
@@ -889,6 +948,9 @@ public static class Program
         Console.WriteLine("  report-run --name <n> (--client <n> --grid <n> | --file <backup>) [--limit <rows>] [--csv | --json]");
         Console.WriteLine("  report-delete --name <n>                     Delete a template");
         Console.WriteLine();
+        Console.WriteLine("Query options (query, report-run): --param name=value for each :name in the SQL (repeat it), --out file.csv|file.json,");
+        Console.WriteLine("  --excel-safe (so a spreadsheet can't run a cell as a formula), --limit rows, --csv, --json");
+        Console.WriteLine();
         Console.WriteLine("Options:");
         Console.WriteLine($"  --data <folder>   Client data folder (default: {DataLocation.FolderName} next to pfr, or ${DataLocation.EnvironmentVariable})");
         Console.WriteLine();
@@ -899,9 +961,10 @@ public static class Program
     /// <summary>Minimal argument parser: a command, --name value options, --flags and positionals.</summary>
     private sealed class Args
     {
-        private static readonly HashSet<string> Flags = ["--json", "--reveal", "--password", "--api-key", "--schema", "--csv"];
+        private static readonly HashSet<string> Flags = ["--json", "--reveal", "--password", "--api-key", "--schema", "--csv", "--excel-safe"];
         private readonly Dictionary<string, string> _values = new(StringComparer.Ordinal);
         private readonly HashSet<string> _flags = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, List<string>> _all = new(StringComparer.Ordinal);
 
         public Args(string[] args)
         {
@@ -918,7 +981,10 @@ public static class Program
                 }
                 else if (a.StartsWith("--", StringComparison.Ordinal) && i + 1 < args.Length)
                 {
-                    _values[a] = args[++i];
+                    var value = args[++i];
+                    _values[a] = value;
+                    if (!_all.TryGetValue(a, out var list)) _all[a] = list = [];
+                    list.Add(value);
                 }
                 else
                 {
@@ -930,6 +996,9 @@ public static class Program
         public string? Command { get; }
         public List<string> Positional { get; } = [];
         public string? Value(string name) => _values.GetValueOrDefault(name);
+
+        /// <summary>Every value given for an option that may be repeated (--param a=1 --param b=2).</summary>
+        public IReadOnlyList<string> All(string name) => _all.TryGetValue(name, out var list) ? list : [];
         public bool Has(string flag) => _flags.Contains(flag);
     }
 }

@@ -91,10 +91,9 @@ public sealed class ReportsView : UserControl
                     Children =
                     {
                         new TextBlock { Text = "Reports", Opacity = 0.6, Margin = new Thickness(10, 0, 0, 6) },
-                        _list,
+                        Ui.Recessed(_list),
                         myReports,
-                        _templateList,
-                        _noTemplates,
+                        Ui.Recessed(new StackPanel { Children = { _templateList, _noTemplates } }),
                         _templateProblems,
                     },
                 },

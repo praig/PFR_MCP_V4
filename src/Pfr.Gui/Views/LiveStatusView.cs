@@ -15,7 +15,7 @@ namespace Pfr.Gui.Views;
 public sealed class LiveStatusView : UserControl
 {
     private readonly ClientWorkspace _workspace;
-    private readonly Dictionary<string, LiveGridStatus> _results = [];
+    private readonly Dictionary<string, LiveGridStatus> _results = new(StringComparer.Ordinal);
     private readonly TextBlock _title = Ui.Heading("Live status", 16);
     private readonly TextBlock _summary = new() { TextWrapping = Avalonia.Media.TextWrapping.Wrap };
     private readonly TextBlock _message = Ui.Message();

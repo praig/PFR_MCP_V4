@@ -57,8 +57,29 @@ public class OneDbReaderTests
     [Fact]
     public void Parser_allowlist_excludes_secret_object_types()
     {
-        Assert.DoesNotContain(BackupParser.AllowedTypes, t =>
-            t.Contains("private_key") || t.Contains("certificate") || t.Contains("admin"));
+        Assert.DoesNotContain(BackupParser.AllowedTypes, t => t.Contains("private_key") || t.Contains("certificate"));
+    }
+
+    [Fact]
+    public void Only_the_admin_types_that_hold_names_groups_roles_and_permissions_are_read()
+    {
+        // Accounts, groups and how they are linked, plus the authentication order...
+        var adminTypes = BackupParser.AllowedTypes.Where(t => t.Contains("admin")).Order().ToList();
+        Assert.Equal(
+            ["one.admin", "one.admin_auth_method", "one.admin_group", "one.admin_group_link", "one.admin_group_role_link"],
+            adminTypes);
+        Assert.Contains("one.role", BackupParser.AllowedTypes);
+        Assert.Contains("one.hier_rule", BackupParser.AllowedTypes);
+        Assert.Contains("one.action_rule", BackupParser.AllowedTypes);
+
+        // ...but never the types that exist to hold passwords, policies, servers or keys.
+        string[] neverRead =
+        [
+            "one.lom_user", "one.admin_group_password_setting", "one.admin_group_security_setting",
+            "one.admin_group_saml_setting", "one.admin_radius_server", "one.ad_auth_server", "one.tacacsplus_auth_server",
+            "one.snmp_user", "one.ntp_authen_key", "one.password_setting", "one.private_key", "one.app_certificate",
+        ];
+        Assert.Empty(neverRead.Intersect(BackupParser.AllowedTypes));
     }
 
     [Fact]
