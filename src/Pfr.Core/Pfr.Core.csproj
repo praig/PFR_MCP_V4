@@ -23,4 +23,12 @@
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.11" />
   </ItemGroup>
 
+  <!--
+    SSH for the network tools (scripted command capture on appliances). SSH.NET is MIT licensed; it is pure managed code,
+    so nothing is installed on the target machine. Host keys are checked by this application, not trusted blindly.
+  -->
+  <ItemGroup>
+    <PackageReference Include="SSH.NET" Version="2025.1.0" />
+  </ItemGroup>
+
 </Project>

@@ -101,6 +101,7 @@ public static class BackupParser
         AddNetworks(inv, byType);
         AddDhcp(inv, byType);
         AddRecords(inv, byType);
+        AddHosts(inv, byType);
         LicenseParser.Apply(inv, byType);
         MemberServices.Apply(inv, byType);
         AdminParser.Apply(inv, byType);
@@ -433,6 +434,84 @@ public static class BackupParser
             c = a.Type.CompareTo(b.Type);
             return c != 0 ? c : IpSort.Compare(a.Value, b.Value);
         });
+    }
+
+    /// <summary>
+    /// Reads every host object with its addresses and aliases, DNS hosts and IPAM-only ones alike. An IPAM-only host
+    /// (under a <c>non_DNS_host_root</c>) generates no DNS records, so this is the only place it is recorded. The network
+    /// view of a host comes from its zone's DNS view, or from the root that holds it: host addresses carry none.
+    /// </summary>
+    private static void AddHosts(GridInventory inv, Dictionary<string, List<OneDbObject>> byType)
+    {
+        var zones = inv.Zones.ToDictionary(z => z.Key, StringComparer.Ordinal);
+
+        var networkViewOfRoot = new Dictionary<string, int?>(StringComparer.Ordinal);
+        foreach (var v in byType["dns.view"]) networkViewOfRoot[v.GetOrEmpty("zone")] = v.GetInt("network_view");
+
+        // Addresses and aliases name their host as "zone.name" or, for a host created with a timestamp (the IPAM-only
+        // ones in a real backup), "zone.creator.timestamp.name". Both forms are accepted.
+        var byReference = new Dictionary<string, HostObject>(StringComparer.Ordinal);
+        foreach (var h in byType["dns.host"])
+        {
+            var zoneKey = h.GetOrEmpty("zone");
+            var hostName = h.GetOrEmpty("name");
+            var viewKey = ViewKeyOf(zoneKey);
+            var isDns = zones.TryGetValue(zoneKey, out var zone);
+
+            var host = new HostObject
+            {
+                Name = !isDns ? hostName : hostName.Length == 0 ? zone!.Fqdn : $"{hostName}.{zone!.Fqdn}",
+                ZoneKey = zoneKey,
+                ViewKey = viewKey,
+                NetworkViewId = networkViewOfRoot.GetValueOrDefault(viewKey),
+                IsDns = isDns,
+                Disabled = h.GetBool("disabled"),
+                Comment = NullIfEmpty(h.Get("comment")),
+                Ttl = isDns ? OwnTtl(h, TtlSource.Host) ?? zone!.DefaultTtl : new Ttl(null, TtlSource.Grid),
+            };
+            inv.Hosts.Add(host);
+
+            byReference.TryAdd($"{zoneKey}.{hostName}", host);
+            if (h.Get("created_timestamp") is { Length: > 0 } created)
+                byReference[$"{zoneKey}.{h.Get("creator_member") ?? "0"}.{created}.{hostName}"] = host;
+        }
+
+        foreach (var a in byType["dns.host_address"])
+        {
+            if (!byReference.TryGetValue(a.GetOrEmpty("host"), out var owner)) continue;
+            var address = a.GetOrEmpty("address");
+            if (address.Length == 0) continue; // a delegated IPv6 prefix has no single address
+
+            owner.Addresses.Add(new HostAddress
+            {
+                Address = address,
+                IsIpv6 = a.Get("is_ipv4") == "false" || address.Contains(':'),
+                ConfigureForDhcp = a.GetBool("configure_for_dhcp"),
+                MacAddress = NullIfEmpty(a.Get("mac_address")),
+                ReverseZoneKey = NullIfEmpty(a.Get("reverse_zone")),
+            });
+        }
+
+        foreach (var alias in byType["dns.host_alias"])
+        {
+            if (!byReference.TryGetValue(alias.GetOrEmpty("host"), out var owner)) continue;
+            var aliasName = alias.GetOrEmpty("alias");
+            owner.Aliases.Add(zones.TryGetValue(alias.GetOrEmpty("zone"), out var aliasZone)
+                ? $"{aliasName}.{aliasZone.Fqdn}"
+                : aliasName);
+        }
+
+        foreach (var host in inv.Hosts)
+        {
+            host.Addresses.Sort((x, y) => IpSort.Compare(x.Address, y.Address));
+            host.Aliases.Sort(StringComparer.OrdinalIgnoreCase);
+        }
+        var ordered = inv.Hosts
+            .OrderBy(h => h.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(h => h.ZoneKey, StringComparer.Ordinal)
+            .ToList();
+        inv.Hosts.Clear();
+        inv.Hosts.AddRange(ordered);
     }
 
     /// <summary>

@@ -33,7 +33,7 @@ public static class ModuleCatalog
         (AppModule.Ipam, "IPAM",
             "A client's address plan across all its grids: every network once, which grids it is present in, and the DHCP ranges inside."),
         (AppModule.NetworkTools, "Network tools",
-            "Ping, SNMP, SSH console and command capture, DNS lookups."),
+            "Ping, DNS lookups (dig), and SSH command capture on appliances. SNMP and an interactive SSH console come later."),
         (AppModule.Reports, "Reports",
             "Predefined reports (health checks, CNAME resolution, licenses…), a data explorer and remediation change sets."),
     ];

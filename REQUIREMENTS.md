@@ -1,6 +1,6 @@
 # PFR_MCP_V4 — Requirements
 
-Status: **Draft v0.9** — updated 2026-10-28. Items marked **[PENDING]** are open decisions (see [Open decisions](#15-open-decisions)).
+Status: **Draft v0.10** — updated 2026-10-28. Items marked **[PENDING]** are open decisions (see [Open decisions](#15-open-decisions)).
 Items marked **✅** are implemented.
 
 ---
@@ -47,9 +47,9 @@ Scope is **NIOS (on-prem grids)**. External network sources (Forward Networks, N
 | GUI | Avalonia, Avalonia.Controls.DataGrid | MIT | ✅ |
 | Charts | ScottPlot or LiveCharts2 | MIT | planned |
 | SNMP | SharpSnmpLib | MIT | planned |
-| SSH | SSH.NET | MIT | planned |
-| DNS | DnsClient.NET | Apache 2.0 | planned |
-| Ping | System.Net.NetworkInformation (built in) | — | planned |
+| SSH | SSH.NET | MIT | ✅ |
+| DNS | Written for this project: a DNS message reader/writer (DnsClient.NET was planned; not needed, and a library would hide the header flags and EDNS details that dig-style output shows) | — | ✅ |
+| Ping | System.Net.NetworkInformation (built in) | — | ✅ |
 | SQL for Explore data | Microsoft.Data.Sqlite + SQLite (bundled native library) | MIT; SQLite is public domain | ✅ |
 
 ---
@@ -232,12 +232,23 @@ Parameters and export on the command line: `--param name=value` (repeat it for e
 
 ---
 
-## 11. Module 3 — Network tools
+## 11. Module 3 — Network tools ✅ (ping, DNS lookups, SSH command capture; SNMP and an interactive SSH console pending)
 
-- **Ping:** single host, list, or all members of a grid/site — reachability, latency, loss.
-- **SNMP:** GET/GETNEXT/WALK; v1, v2c, v3; Infoblox MIBs for readable names. [PENDING] versions in use.
-- **SSH:** interactive console and scripted NIOS CLI command capture; host keys pinned. [PENDING] OS SSH client vs embedded terminal; [PENDING] targets beyond grid members.
-- **DNS lookups:** dig-style queries (any type, chosen server, UDP/TCP, DNSSEC flags); compare mode across all DNS members; batch and reverse lookups.
+Only hosts the user names are contacted (§3): typed in, read from a file, or taken from the members of a grid that is open. Every tool is in the GUI (Network tools tab: Ping, DNS lookup, SSH commands) and the CLI. Stop in the GUI ends a run and keeps what was found; Ctrl+C in the CLI does the same for `ping`, and stops `dig` and `ssh-run` (exit code 130).
+
+- **Ping ✅:** one host, a list (typed, or `--file`), or every member of a grid, with each node of an HA pair on its own. Count, wait time, interval and IPv4/IPv6 preference are set per run; the result per host is sent, received, loss, min/average/max and a status (up, 30% loss, down, unreachable, cannot resolve). A name typed after an address (`10.0.0.1  # gm.lab.test`) labels it, so members keep their names. Uses the operating system's ICMP (normally no administrator rights, nothing installed; on Linux the system may need to allow unprivileged ping). CLI: `pfr ping`. Tests use a fake pinger; one real loopback ping checks the system pinger.
+- **SNMP:** GET/GETNEXT/WALK; v1, v2c, v3; Infoblox MIBs for readable names. [PENDING] versions in use (§15 #7). Not built.
+- **SSH ✅ (command capture):** scripted commands on one or many hosts, output captured as text or JSON (`--json`, `--out`). Commands run one at a time, each in its own channel (no terminal), so interactive and full-screen commands do not work. Not yet checked against a real appliance: that the NIOS CLI accepts commands this way. [PENDING: verify on the lab grid.]
+  - **Read-only by default:** only `show`, `ping`, `ping6`, `traceroute` and `traceroute6` run, one command at a time (no `;` `&` `|` `` ` `` `$` `<` `>` or backslash); changes have to be allowed explicitly (`--allow-changes`, or the tick box). A command with a line break or control character is never run.
+  - **Host keys are pinned per client** and stored encrypted with the client's other data. A host's key is checked before any password is sent: no pin means the engineer is shown the algorithm and SHA-256 fingerprint and must confirm (or give `--pin SHA256:...`); a different key from the pinned one is refused and never offered for pinning, and the pin can be forgotten after an appliance is legitimately rebuilt (`pfr ssh-key-remove`, or Forget in the GUI). A grid that is not saved to a client keeps pins only until the application closes.
+  - **Accounts:** a typed user id and password (CLI: prompted, or `PFR_SSH_PASSWORD`), or the grid's saved read-only (default) or read-write account. Passwords never appear in output, errors or logs.
+  - CLI: `pfr ssh-run`, `pfr ssh-keys`, `pfr ssh-key-remove`.
+  - **Interactive console: not built.** [PENDING] OS SSH client vs embedded terminal (§15 #5); [PENDING] whether targets other than Infoblox members are wanted (§15 #6; any host the user names can be run against, but the read-only list is NIOS's).
+- **DNS lookups ✅:** dig-style queries to a server the user chooses (a grid member from the open grid, an address, or a name; with none given the CLI uses this computer's resolver and says so). Any record type (by name or `TYPEnnn`), classes IN and CH (so `version.bind` works), UDP by default with an automatic repeat over TCP when the answer is cut short, or TCP only; flags for recursion (RD), DNSSEC OK (DO), checking disabled (CD) and authentic data (AD); EDNS with a 1232-byte UDP size. Output follows dig (header, flags, sections, query time, server, size) or `+short`. Record data is written as in a zone file for A, AAAA, NS, CNAME, DNAME, PTR, MX, SOA, TXT, SPF, SRV, CAA, NAPTR, DS, DNSKEY, RRSIG, NSEC, TLSA and SSHFP; any other type is shown in the generic `\# length hex` form. Names with accented letters are converted to their ASCII form.
+  - **Reverse lookups:** an address (`-x`, or just typed) is asked as a PTR in its reverse zone, IPv4 and IPv6.
+  - **Batch:** a list of names (optionally with a type) and addresses, one per line, looked up several at a time into a table.
+  - **Compare:** the same question asked of every DNS member of a grid (or a list of servers), grouped by identical answer, with status, authoritative flag and lowest TTL per server; TTLs and record order are ignored when deciding whether servers agree. CLI exit code is 1 when they differ.
+  - CLI: `pfr dig` (also understands `@server`, `-x`, `+short`, `+tcp`, `+dnssec`, `+cd`, `+norecurse`).
 
 ---
 
@@ -282,7 +293,7 @@ Renamed from "Health check". Holds **predefined reports**, a **data explorer** a
 ### 12.6 Explore data ✅
 - **What it is:** read-only SQL against the stored snapshot of the open grid — no backup needed. GUI: Reports › *Explore data*. CLI: `pfr tables` and `pfr query`, which also work on a backup file with `--file`.
 - **How it works:** the snapshot is loaded into an in-memory SQLite database the first time the page is used for a grid. It is a throwaway copy: nothing is written to disk or to the stored snapshot, and it is discarded when another grid is opened.
-- **Tables:** `grid`, `members`, `nodes`, `member_services`, `licenses`, `network_views`, `dns_views`, `zones`, `zone_servers`, `networks`, `dhcp_ranges`, `failover`, `records` and the administrator tables below. Ids and keys are kept so tables join (`members.oid = member_services.member_oid`, `records.zone_key = zones.zone_key`, `dhcp_ranges.network_key = networks.network_key`...). Booleans are 0/1 and dates are `yyyy-MM-dd` text. The table browser lists every table with its row count and each column with a description.
+- **Tables:** `grid`, `members`, `nodes`, `member_services`, `licenses`, `network_views`, `dns_views`, `zones`, `zone_servers`, `networks`, `dhcp_ranges`, `failover`, `records`, `hosts` and the administrator tables below. Ids and keys are kept so tables join (`members.oid = member_services.member_oid`, `records.zone_key = zones.zone_key`, `dhcp_ranges.network_key = networks.network_key`...). Booleans are 0/1 and dates are `yyyy-MM-dd` text. The table browser lists every table with its row count and each column with a description. `hosts` has one row per host address and includes **IPAM-only hosts**, which have no DNS records and so appear nowhere else.
 - **Administrator tables** ✅ (read from the backup): `admin_users` (name, group, superuser, auth type, status, disabled, last sign-in), `admin_groups` (superuser flag, user and role counts), `admin_roles`, `admin_group_roles`, `admin_permissions` (what a group or a role may read, modify, delete or create: `owner_type` and `owner_name` say who, `resource_type` and `resource_key` say what, where a zone's key is a `zones.zone_key` and a network's a `networks.network_key`; the level is named Read/Write, Read-only, Deny or Custom), `admin_access` (GUI, CLI, API, cloud API and TAXII access per group) and `admin_auth_methods` (the order authentication methods are tried). They hold **no secrets**: passwords, password hashes, certificates and SSH keys are never read, and nothing about a user beyond the name, group, status and last sign-in is kept. A group gets a role's permissions through `admin_group_roles`; a superuser group has full access whatever its permissions say, and rules NIOS adds itself are flagged `unmanaged`. Snapshots imported before this was added have empty administrator tables until the backup is imported again.
 - **IP-aware functions**, because plain SQL can't order or search addresses: `ip_key(x)` orders addresses and prefixes numerically (IPv4 before IPv6), `cidr_contains(prefix, x)` and `ip_in_range(x, start, end)`.
 - **Safe by construction:** one statement at a time, and only `SELECT` (or `WITH`, `VALUES`, `EXPLAIN`); `INSERT`, `UPDATE`, `DELETE`, `CREATE`, `DROP`, `ATTACH`, `PRAGMA` and the like are refused with a clear message. The database is also opened read-only at the SQLite level, so the guard is not the only protection. A query that runs longer than 30 seconds is stopped. Words inside string literals, quoted names and comments are not mistaken for keywords. Errors are shown without SQLite's internal wording.
@@ -360,7 +371,7 @@ Placement rules:
 | Device interface address | The interface address | External sources | Device, interface, prefix length, VRF, status, source |
 
 - Only records that carry an address are part of IPAM. CNAME, MX, SRV, TXT, NAPTR, CAA, NS and system-managed records stay in Inventory (§10.3). The TTL rules of §10.3 apply to the A / AAAA / PTR rows.
-- [PENDING] Whether fixed addresses, reservations and (over WAPI) leases are included.
+- Fixed addresses, reservations and leases are **not included for now** (decided). They can be added later as another kind of address-level object without changing the model.
 - **Only networks are merged across sources** (through **Present in**). Devices, hosts, DHCP ranges, A / AAAA / PTR records and device interface addresses are **listed once per grid or source they exist in**: a device known to both Forward Networks and NetBrain appears twice, and a host with the same name on two grids appears twice, each row with its own Grid / Source.
 - Names (host, device, record) are never keys. A host with several addresses is listed under each address, same-named objects at different addresses are separate rows, and one address on two grids is two rows.
 
@@ -386,9 +397,9 @@ Placement rules:
 - This is the Infoblox ↔ network correlation that was previously deferred together with Forward Networks.
 
 ### 13.8 GUI and CLI
-- **IPAM** module tab, after Inventory, with sections *Address plan* (the tree), *Devices* (table) and *Sources* (the client's grids with their snapshot dates, the external sources with their batches, and **Import…**). **First version ✅:** the tab after Inventory opens the *Address plan* tree of one client (a client picker, defaulting to the client whose grid is open), with a grid filter, *Present in more than one grid* and a DHCP ranges switch. It is built when the tab is opened and rebuilt after a client, grid or snapshot changes. *Devices* and *Sources* come with external sources.
-- **Built so far** ✅: the address-plan engine — one network per prefix with **Present in** and per-source values (a comma separated list of the different values when they differ), nesting by containment across grids within each network view (views of the same name on different grids are one view), DHCP ranges placed under the most specific network of their own view or under *(no network)*, roll-up counts, and a grid filter that keeps matches with their containers — built from each grid's latest stored snapshot. **Not built yet:** hosts and A / AAAA / PTR records under their networks (the parser does not yet read IPAM-only hosts), a details panel with each source's own values for a network, the filters for network view, object kind and IP version, external sources and import, and the findings of §13.7.
-- CLI ✅: `pfr ipam --client <name> [--grid <name>] [--json] [--no-ranges]` prints the plan as an indented tree, or as JSON. Planned: `--source <name>`, `pfr ipam-sources --client <name>` and `pfr ipam-import --client <name> --source <name> <file> [--label <text>] [--dry-run]`.
+- **IPAM** module tab, after Inventory, with sections *Address plan* (the tree), *Devices* (table) and *Sources* (the client's grids with their snapshot dates, the external sources with their batches, and **Import…**). **First version ✅:** the tab after Inventory opens the *Address plan* tree of one client (a client picker, defaulting to the client whose grid is open), with a grid filter, *Present in more than one grid* and switches for DHCP ranges, hosts and DNS records. Under each network the tree lists its **DHCP ranges**, its **hosts** (one row per address, IPAM-only hosts included) and the **A / AAAA / PTR records** no host generates; the records a DNS host generates are rows under that host. A PTR record is placed by the address in its reverse name; one that is not for a single address (a classless delegation) is left out and counted in a note. A plan with more than 20,000 such records starts with *DNS records* unticked and says so, because every row is built up front. A **details panel** under the tree shows what each grid says about the selected network (its network view, kind, comment, disabled flag and snapshot date, with a note when the prefix is in several network views or the grids disagree on its kind), the details of a selected DHCP range (including whether its own grid has the network it sits in) and, for a network view, what each grid has in it. It is built when the tab is opened and rebuilt after a client, grid or snapshot changes. *Devices* and *Sources* come with external sources.
+- **Built so far** ✅: the address-plan engine — one network per prefix with **Present in** and per-source values (a comma separated list of the different values when they differ), nesting by containment across grids within each network view (views of the same name on different grids are one view), DHCP ranges, hosts (one row per address, with the records a DNS host generates under it) and A / AAAA / PTR records placed under the most specific network of their own view or under *(no network)*, roll-up counts, and a grid filter that keeps matches with their containers — built from each grid's latest stored snapshot. **Not built yet:** building host and record rows only when a network is expanded (all rows are built up front), the filters for network view, object kind beyond the three switches and IP version, external sources and import, and the findings of §13.7. Fixed addresses and reservations are deliberately not read for now.
+- CLI ✅: `pfr ipam --client <name> [--grid <name>] [--json] [--no-ranges]` prints the plan as an indented tree, or as JSON. DHCP ranges and hosts are listed; `--no-ranges` and `--no-hosts` leave them out and `--records` adds the A / AAAA / PTR records (which can be very many). Planned: `--source <name>`, `pfr ipam-sources --client <name>` and `pfr ipam-import --client <name> --source <name> <file> [--label <text>] [--dry-run]`.
 
 ---
 
@@ -408,13 +419,13 @@ Placement rules:
 | 2 | Limit WAPI read-write to specific change types, or open with safeguards | §6 |
 | 3 | Confirm site fields | §10.4 |
 | 4 | Multi-site / Global locations for DNS zones | §10.4 |
-| 5 | SSH console: OS SSH client, embedded terminal, or OS client first | §11 |
-| 6 | SSH targets: Infoblox members only, or other devices | §11 |
+| 5 | SSH console: OS SSH client, embedded terminal, or OS client first. Command capture is built; the interactive console is not | §11 |
+| 6 | SSH targets: Infoblox members only, or other devices. For now any host the user names can be used, with the read-only command list written for the NIOS CLI | §11 |
 | 7 | SNMP versions in use (v3 only, or v2c too) | §11 |
 | 8 | Default resolver for live CNAME checks | §12.5 |
 | 9 | Report branding (logo, company name) | §5 |
 | 10 | IPAM: how the network views of different grids and the VRFs / routing instances of external sources are grouped into the tree's views (default: by name, editable) | §13.3 |
-| 11 | IPAM: include fixed addresses, reservations and leases | §13.4 |
+| 11 | ~~IPAM: include fixed addresses, reservations and leases~~ — decided: not for now | §13.4 |
 | 12 | IPAM import model: confirm the network and device fields | §13.5 |
 | 13 | Forward Networks and NetBrain: which exports/formats are available, and whether direct API pull is wanted | §13.5 |
 | 14 | IPAM: a device with no management address — reject it, or key it by its first interface address | §13.5 |

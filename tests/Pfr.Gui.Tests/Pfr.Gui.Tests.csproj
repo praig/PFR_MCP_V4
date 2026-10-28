@@ -21,6 +21,8 @@
     <Compile Include="..\Pfr.Core.Tests\Ipam\IpamFixtures.cs" Link="IpamFixtures.cs" />
     <!-- A local HTTPS server that behaves like a grid's WAPI, for the connection and backup-pull tests. -->
     <Compile Include="..\Pfr.Core.Tests\Wapi\FakeWapiServer.cs" Link="FakeWapiServer.cs" />
+    <!-- Fake DNS, ping and SSH back ends and a DNS message builder, for the network tools tests. -->
+    <Compile Include="..\Pfr.Core.Tests\Network\DnsTestKit.cs" Link="DnsTestKit.cs" />
   </ItemGroup>
 
   <ItemGroup>

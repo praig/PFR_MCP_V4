@@ -21,8 +21,13 @@ removed, or upgraded (`dotnet list src/Pfr.Gui package --include-transitive`).
 | Microsoft.Data.Sqlite (with Microsoft.Data.Sqlite.Core) | 8.0.11 | MIT | GUI, CLI (Explore data) | https://github.com/dotnet/efcore |
 | SQLitePCLRaw (bundle_e_sqlite3, core, provider, and the native e_sqlite3 library for each OS) | 2.1.x (confirm with `dotnet list package --include-transitive`) | Apache 2.0 | GUI, CLI (Explore data) | https://github.com/ericsink/SQLitePCL.raw |
 | SQLite (inside e_sqlite3) | bundled | Public domain | GUI, CLI (Explore data) | https://www.sqlite.org/copyright.html |
+| SSH.NET | 2025.1.0 | MIT | GUI, CLI (Network tools: SSH command capture) | https://github.com/sshnet/SSH.NET |
+| BouncyCastle.Cryptography (via SSH.NET) | confirm with `dotnet list package --include-transitive` | MIT-style (Bouncy Castle License) | GUI, CLI (SSH) | https://github.com/bcgit/bc-csharp |
+| Microsoft.Extensions.Logging.Abstractions (via SSH.NET) | confirm with `dotnet list package --include-transitive` | MIT | GUI, CLI (SSH) | https://github.com/dotnet/runtime |
 
-The CLI (`pfr`) uses the .NET runtime and the SQLite packages above (for `pfr query`); nothing else.
+Ping uses the .NET runtime's own ICMP support, and DNS lookups use a DNS message reader and writer written for this project (no DNS library is shipped).
+
+The CLI (`pfr`) uses the .NET runtime, the SQLite packages above (for `pfr query`) and SSH.NET (for `pfr ssh-run`); nothing else.
 SQLite runs in memory only: Explore data never writes a database file.
 
 ## Build and test only (not shipped)
@@ -41,5 +46,3 @@ SQLite runs in memory only: Explore data never writes a database file.
 |---|---|---|
 | ScottPlot or LiveCharts2 | MIT | Charts |
 | SharpSnmpLib | MIT | SNMP |
-| SSH.NET | MIT | SSH |
-| DnsClient.NET | Apache 2.0 | DNS lookups |

@@ -44,6 +44,7 @@ public partial class MainWindow : Window, IInventoryHost
 
         Clients = new ClientsView(_store, this, kdfIterations);
         Reports = new ReportsView(new ReportTemplateStore(TemplateLocation.Resolve(templatesFolder)));
+        Tools = new NetworkToolsView(() => new ToolContext(LoadedInventory, Clients.Workspace, LoadedSnapshot?.Client, LoadedSnapshot?.Grid));
         Clients.StateChanged += async (_, _) => await OnStoreStateChangedAsync();
         Clients.DataChanged += (_, _) =>
         {
@@ -70,6 +71,7 @@ public partial class MainWindow : Window, IInventoryHost
                     AppModule.Ipam => Ipam,
                     AppModule.ClientWorkspace => Clients,
                     AppModule.Reports => Reports,
+                    AppModule.NetworkTools => Tools,
                     _ => Placeholder(summary),
                 },
             });
@@ -78,11 +80,13 @@ public partial class MainWindow : Window, IInventoryHost
         // Start on Clients: work is organised per client.
         ShowModule(AppModule.ClientWorkspace);
 
-        // The address plan is built when its tab is opened. (Lists inside the pages raise this event too.)
+        // The address plan is built when its tab is opened, and the network tools look at the grid that is open then.
+        // (Lists inside the pages raise this event too.)
         ModuleTabs.SelectionChanged += async (_, e) =>
         {
-            if (ReferenceEquals(e.Source, ModuleTabs) && ModuleTabs.SelectedItem is TabItem { Content: IpamView })
-                await ShowIpamAsync();
+            if (!ReferenceEquals(e.Source, ModuleTabs)) return;
+            if (ModuleTabs.SelectedItem is TabItem { Content: IpamView }) await ShowIpamAsync();
+            else if (ModuleTabs.SelectedItem is TabItem { Content: NetworkToolsView }) Tools.RefreshContext();
         };
 
         // Closing the app forgets the key; data stays encrypted on disk.
@@ -96,6 +100,8 @@ public partial class MainWindow : Window, IInventoryHost
     public ClientsView Clients { get; }
 
     public ReportsView Reports { get; }
+
+    public NetworkToolsView Tools { get; }
 
     public GridInventory? LoadedInventory { get; private set; }
 

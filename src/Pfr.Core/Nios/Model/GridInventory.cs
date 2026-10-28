@@ -33,6 +33,12 @@ public sealed class GridInventory
     public List<AdminAccess> AdminAccessRights { get; } = [];
     public List<AdminAuthMethod> AdminAuthMethods { get; } = [];
 
+    /// <summary>
+    /// Every host object with its addresses, including IPAM-only hosts (which have no DNS records, so they appear
+    /// nowhere else). A DNS host's records are also in <see cref="Records"/>.
+    /// </summary>
+    public List<HostObject> Hosts { get; } = [];
+
     /// <summary>Host objects in DNS zones (each also appears as A/AAAA/PTR/CNAME records).</summary>
     public int HostCount { get; set; }
 

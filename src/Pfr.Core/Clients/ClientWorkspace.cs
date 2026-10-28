@@ -13,6 +13,7 @@ namespace Pfr.Core.Clients;
 /// clients/&lt;client&gt;/client.pfr                         client, contacts, notes, grids and snapshot lists
 /// clients/&lt;client&gt;/log.pfr                            engagement log
 /// clients/&lt;client&gt;/logins.pfr                         logins and API keys for the client's own sites
+/// clients/&lt;client&gt;/sshkeys.pfr                        SSH host keys pinned for the client's hosts
 /// clients/&lt;client&gt;/grids/&lt;grid&gt;/snapshots/&lt;id&gt;.pfr    parsed inventory (gzip JSON)
 /// clients/&lt;client&gt;/grids/&lt;grid&gt;/connection.pfr        WAPI address and accounts (optional)
 /// </code>
@@ -326,6 +327,43 @@ public sealed class ClientWorkspace(SecureStore store)
     {
         var logins = GetLogins(clientId);
         if (logins.RemoveAll(l => l.Id == loginId) > 0) Store.WriteJson(LoginsFile(clientId), logins);
+    }
+
+    // ---- SSH host keys -----------------------------------------------------
+
+    private static string SshKeysFile(string clientId) => $"{ClientsFolder}/{clientId}/sshkeys.pfr";
+
+    /// <summary>The SSH host keys pinned for a client, by host.</summary>
+    public List<SshPinnedKey> GetSshHostKeys(string clientId) =>
+        (Store.Exists(SshKeysFile(clientId)) ? Store.ReadJson<List<SshPinnedKey>>(SshKeysFile(clientId)) : [])
+        .OrderBy(k => k.Host, StringComparer.OrdinalIgnoreCase).ThenBy(k => k.Port).ToList();
+
+    /// <summary>The key pinned for a host and port, or null if there is none.</summary>
+    public SshPinnedKey? FindSshHostKey(string clientId, string host, int port) =>
+        GetSshHostKeys(clientId).FirstOrDefault(k => k.Port == port && string.Equals(k.Host, host, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>Pins a host key, replacing any key already pinned for that host and port.</summary>
+    /// <exception cref="ArgumentException">No host, or the client no longer exists; nothing is stored.</exception>
+    public SshPinnedKey PinSshHostKey(string clientId, string host, int port, string algorithm, string fingerprint)
+    {
+        if (!Store.Exists(ClientFile(clientId))) throw new ArgumentException("That client no longer exists.");
+        host = host.Trim();
+        if (host.Length == 0) throw new ArgumentException("A host key needs the host it belongs to.");
+
+        var keys = GetSshHostKeys(clientId);
+        keys.RemoveAll(k => k.Port == port && string.Equals(k.Host, host, StringComparison.OrdinalIgnoreCase));
+        var key = new SshPinnedKey { Host = host, Port = port, Algorithm = algorithm, Fingerprint = fingerprint };
+        keys.Add(key);
+        Store.WriteJson(SshKeysFile(clientId), keys);
+        return key;
+    }
+
+    /// <summary>Forgets the pinned key of a host (it will have to be confirmed again next time).</summary>
+    public void DeleteSshHostKey(string clientId, string host, int port)
+    {
+        var keys = GetSshHostKeys(clientId);
+        if (keys.RemoveAll(k => k.Port == port && string.Equals(k.Host, host, StringComparison.OrdinalIgnoreCase)) > 0)
+            Store.WriteJson(SshKeysFile(clientId), keys);
     }
 
     // ---- Engagement log --------------------------------------------------

@@ -70,6 +70,7 @@ public sealed class TreeTable : UserControl
         };
         _grid.Sorting += OnSorting;
         _grid.KeyDown += OnKeyDown;
+        _grid.SelectionChanged += (_, _) => SelectionChanged?.Invoke(this, EventArgs.Empty);
 
         for (var i = 0; i < tree.Columns.Count; i++)
         {
@@ -101,6 +102,15 @@ public sealed class TreeTable : UserControl
     }
 
     public string Title => _tree.Title;
+
+    /// <summary>Raised when the selected rows change (also when a selected row disappears, e.g. a collapsed branch).</summary>
+    public event EventHandler? SelectionChanged;
+
+    /// <summary>The selected row, or the first of several; null when nothing is selected.</summary>
+    public TreeRow? SelectedRow => _grid.SelectedItem as TreeRow;
+
+    /// <summary>Selects a row that is currently visible.</summary>
+    public void Select(TreeRow row) => _grid.SelectedItem = row;
 
     /// <summary>Rows currently in the grid (expanded and matching the search).</summary>
     public IReadOnlyList<TreeRow> VisibleRows => _visible;

@@ -21,6 +21,9 @@ public sealed class TreeRow : INotifyPropertyChanged
     public bool IsGroup { get; }
     public string SearchText { get; }
 
+    /// <summary>What the row stands for (e.g. a network), so a details panel can show more about it. Not displayed.</summary>
+    public object? Tag { get; init; }
+
     public TreeRow? Parent { get; private set; }
     public List<TreeRow> Children { get; } = [];
     public int Depth { get; private set; }

@@ -190,6 +190,11 @@ internal static class OneDbFixture
         // A non-DNS host (IPAM only) must not produce records.
         O("dns.host", ("zone", ".non_DNS_host_root"), ("name", "printer")),
         O("dns.host_address", ("host", ".non_DNS_host_root.printer"), ("address", "10.0.0.30"), ("is_ipv4", "true")),
+        // An IPAM-only host created with a timestamp: its addresses name it "zone.creator.timestamp.name", as in a real backup.
+        O("dns.host", ("zone", ".non_DNS_host_root"), ("name", "router"), ("created_timestamp", "1700000000000"),
+            ("creator_member", "0"), ("comment", "Edge router")),
+        O("dns.host_address", ("host", ".non_DNS_host_root.0.1700000000000.router"), ("address", "10.0.0.31"),
+            ("is_ipv4", "true"), ("configure_for_dhcp", "true"), ("mac_address", "00:11:22:33:44:55")),
 
         // Other record types.
         O("dns.bind_mx", ("zone", "._default.test.lab"), ("name", ""), ("priority", "10"), ("mx", "mail.lab.test")),

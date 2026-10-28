@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 using Pfr.Core;
 using Pfr.Core.Clients;
 using Pfr.Core.Ipam;
+using Pfr.Core.Network;
 using Pfr.Core.Nios.Backup;
 using Pfr.Core.Nios.Model;
 using Pfr.Core.Query;
@@ -11,7 +12,7 @@ using Pfr.Core.Wapi;
 
 namespace Pfr.Cli;
 
-public static class Program
+public static partial class Program
 {
     /// <summary>Master password for scripted use; otherwise it is prompted without echo.</summary>
     public const string PasswordVariable = "PFR_MASTER_PASSWORD";
@@ -46,6 +47,11 @@ public static class Program
                 "grids" => ListGrids(cli),
                 "show" => Show(cli),
                 "ipam" => RunIpam(cli),
+                "ping" => RunPing(cli),
+                "dig" => RunDig(cli),
+                "ssh-run" => RunSsh(cli),
+                "ssh-keys" => ListSshKeys(cli),
+                "ssh-key-remove" => RemoveSshKey(cli),
                 "connection-set" => SetConnection(cli),
                 "connection-show" => ShowConnection(cli),
                 "connection-remove" => RemoveConnection(cli),
@@ -67,8 +73,13 @@ public static class Program
                 _ => Fail($"Unknown command: {cli.Command}\nRun 'pfr help' for usage.", 2),
             };
         }
+        catch (OperationCanceledException)
+        {
+            return Fail("Stopped.", 130); // Ctrl+C while a lookup or SSH run was working
+        }
         catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException
-                                       or System.Xml.XmlException or ArgumentException or InvalidOperationException or WapiException or QueryException)
+                                       or System.Xml.XmlException or ArgumentException or InvalidOperationException or WapiException or QueryException
+                                       or DnsQueryException or SshFailureException or SshHostKeyException)
         {
             return Fail($"Error: {ex.Message}");
         }
@@ -259,7 +270,7 @@ public static class Program
     private static int RunIpam(Args cli)
     {
         if (cli.Value("--client") is not { } clientName)
-            return Fail("Usage: pfr ipam --client <name> [--grid <name>] [--json] [--no-ranges]", 2);
+            return Fail("Usage: pfr ipam --client <name> [--grid <name>] [--json] [--no-ranges] [--no-hosts] [--records]", 2);
         var ws = Unlock(cli);
         using var _ = ws.Store;
         var client = FindClient(ws, clientName);
@@ -273,11 +284,17 @@ public static class Program
             return Fail($"{grid} has no snapshot yet, so it is not in the plan.");
 
         var plan = IpamBuilder.Build(inputs);
-        var showRanges = !cli.Has("--no-ranges");
+
+        // DHCP ranges and hosts are listed by default. DNS records can be very many, so they are asked for.
+        var show = IpamLeafKinds.None;
+        if (!cli.Has("--no-ranges")) show |= IpamLeafKinds.Ranges;
+        if (!cli.Has("--no-hosts")) show |= IpamLeafKinds.Hosts;
+        if (cli.Has("--records")) show |= IpamLeafKinds.Records;
+
         if (cli.Has("--json"))
-            Console.WriteLine(IpamJson.ToJson(plan, client.Name, notes, grid, showRanges));
+            Console.WriteLine(IpamJson.ToJson(plan, client.Name, notes, grid, show));
         else
-            Console.Write(IpamTextReport.Render(plan, client.Name, notes, grid, showRanges));
+            Console.Write(IpamTextReport.Render(plan, client.Name, notes, grid, show));
         return 0;
     }
 
@@ -946,9 +963,10 @@ public static class Program
         Console.WriteLine("  import --client <name> <file> [--label <t>]   Store a backup as a snapshot of its grid");
         Console.WriteLine("  grids --client <name>                         List a client's grids and snapshots");
         Console.WriteLine("  show --client <name> --grid <name> [--json]   Summarize a grid's latest snapshot");
-        Console.WriteLine("  ipam --client <name> [--grid <name>] [--json] [--no-ranges]");
+        Console.WriteLine("  ipam --client <name> [--grid <name>] [--json] [--no-ranges] [--no-hosts] [--records]");
         Console.WriteLine("                                               The client's address plan across all its grids' latest snapshots:");
-        Console.WriteLine("                                               networks by prefix, which grids each is present in, DHCP ranges inside");
+        Console.WriteLine("                                               networks by prefix, which grids each is present in, and the DHCP ranges");
+        Console.WriteLine("                                               and hosts inside (--records adds A / AAAA / PTR records, which can be many)");
         Console.WriteLine();
         Console.WriteLine("Grid connections (WAPI address and accounts, stored encrypted with the client):");
         Console.WriteLine("  connection-set --client <n> --grid <n> [--address <host>] [--port <n>] [--wapi-version <v>]");
@@ -975,6 +993,19 @@ public static class Program
         Console.WriteLine("  tables --client <n> --grid <n>                 List the tables and columns you can query");
         Console.WriteLine("  query --client <n> --grid <n> \"SELECT ...\" [--limit <rows>] [--csv | --json]");
         Console.WriteLine();
+        Console.WriteLine("Network tools (only hosts you name are contacted; Ctrl+C stops and shows what was found):");
+        Console.WriteLine("  ping <host>... [--file <list>] [--members --client <n> --grid <n>] [--count <n>] [--timeout <ms>] [--ipv6]");
+        Console.WriteLine("                                               Reachability, latency and loss; --members pings every member of a grid");
+        Console.WriteLine("  dig [@server] <name> [type] [+short] [+tcp] [+dnssec] [+cd] [+norecurse] | -x <address>");
+        Console.WriteLine("  dig --batch <file> [@server]                 Look up a list of names and addresses");
+        Console.WriteLine("  dig --compare <name> [type] --client <n> --grid <n>   Ask every DNS member and show where they differ");
+        Console.WriteLine("  ssh-run --client <n> (--host <h>... | --grid <n> --members) --command \"show version\" [--command ...]");
+        Console.WriteLine("          [--user <id> | --account ro|rw] [--pin SHA256:...] [--allow-changes] [--json] [--out <file>]");
+        Console.WriteLine("                                               Run commands on hosts over SSH (read-only commands unless --allow-changes;");
+        Console.WriteLine("                                               host keys are pinned per client; password prompted, or set " + SshPasswordVariable + ")");
+        Console.WriteLine("  ssh-keys --client <n>                        List a client's pinned SSH host keys");
+        Console.WriteLine("  ssh-key-remove --client <n> --host <h> [--port <n>]   Forget a pinned host key");
+        Console.WriteLine();
         Console.WriteLine("Report templates (saved queries; plain JSON files in the ReportTemplates folder, or --templates <folder>):");
         Console.WriteLine("  report-list                                  List the report templates");
         Console.WriteLine("  report-show --name <n>                       Show a template's description and SQL");
@@ -995,7 +1026,8 @@ public static class Program
     /// <summary>Minimal argument parser: a command, --name value options, --flags and positionals.</summary>
     private sealed class Args
     {
-        private static readonly HashSet<string> Flags = ["--json", "--reveal", "--password", "--api-key", "--schema", "--csv", "--excel-safe", "--no-ranges"];
+        private static readonly HashSet<string> Flags = ["--json", "--reveal", "--password", "--api-key", "--schema", "--csv", "--excel-safe", "--no-ranges", "--no-hosts", "--records",
+            "--tcp", "--dnssec", "--short", "--cd", "--no-recurse", "--reverse", "--compare", "--members", "--no-nodes", "--ipv6", "--allow-changes"];
         private readonly Dictionary<string, string> _values = new(StringComparer.Ordinal);
         private readonly HashSet<string> _flags = new(StringComparer.Ordinal);
         private readonly Dictionary<string, List<string>> _all = new(StringComparer.Ordinal);
