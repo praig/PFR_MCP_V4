@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using Pfr.Core.Wapi;
 
 namespace Pfr.Core.Clients;
 
@@ -20,6 +21,12 @@ public sealed partial class GridConnection
 
     /// <summary>WAPI version such as "v2.12" or "2.13.1"; null means detect it on connect.</summary>
     public string? WapiVersion { get; set; }
+
+    /// <summary>
+    /// SHA-256 of the grid's TLS certificate (64 lowercase hex characters), pinned on first connect after the
+    /// engineer confirms it, or entered from a known-good source. Null until then.
+    /// </summary>
+    public string? CertificateFingerprint { get; set; }
 
     public Credential? ReadOnly { get; set; }
 
@@ -78,6 +85,8 @@ public sealed partial class GridConnection
         {
             WapiVersion = version;
         }
+
+        CertificateFingerprint = CertificatePin.Normalize(CertificateFingerprint);
 
         ReadOnly = NormalizeAccount(ReadOnly, "read-only");
         ReadWrite = NormalizeAccount(ReadWrite, "read-write");

@@ -137,6 +137,19 @@ public sealed class ClientWorkspace(SecureStore store)
     public void DeleteConnection(string clientId, string gridId) => Store.Delete(ConnectionFile(clientId, gridId));
 
     /// <summary>
+    /// Trusts a grid's TLS certificate: stores its SHA-256 fingerprint on the grid's connection. Used after the
+    /// engineer has compared the fingerprint the grid presented with the grid's own certificate.
+    /// </summary>
+    /// <exception cref="ArgumentException">No saved connection, or not a valid fingerprint.</exception>
+    public GridConnection PinCertificate(string clientId, string gridId, string fingerprint)
+    {
+        var connection = GetConnection(clientId, gridId)
+                         ?? throw new ArgumentException("Save the grid's connection before pinning its certificate.");
+        connection.CertificateFingerprint = fingerprint;
+        return SaveConnection(clientId, gridId, connection);
+    }
+
+    /// <summary>
     /// The grid a new backup belongs to: the one with the same grid name if there is
     /// one, otherwise a new grid named after it.
     /// </summary>

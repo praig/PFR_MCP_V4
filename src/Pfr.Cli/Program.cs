@@ -5,6 +5,7 @@ using Pfr.Core.Clients;
 using Pfr.Core.Nios.Backup;
 using Pfr.Core.Nios.Model;
 using Pfr.Core.Storage;
+using Pfr.Core.Wapi;
 
 namespace Pfr.Cli;
 
@@ -49,11 +50,13 @@ public static class Program
                 "login-set" => SetLogin(cli),
                 "login-show" => ShowLogin(cli),
                 "login-remove" => RemoveLogin(cli),
+                "wapi-test" => WapiTest(cli),
+                "wapi-backup" => WapiBackup(cli),
                 _ => Fail($"Unknown command: {cli.Command}\nRun 'pfr help' for usage.", 2),
             };
         }
         catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException
-                                       or System.Xml.XmlException or ArgumentException or InvalidOperationException)
+                                       or System.Xml.XmlException or ArgumentException or InvalidOperationException or WapiException)
         {
             return Fail($"Error: {ex.Message}");
         }
@@ -252,7 +255,8 @@ public static class Program
         "Usage: pfr connection-set --client <name> --grid <name> [--address <host>] [--port <n>] [--wapi-version <v|auto>]\n" +
         "                          [--ro-user <id>] [--rw-user <id>]\n" +
         "Passwords are never given on the command line: they are prompted, or read from " +
-        ReadOnlyPasswordVariable + " / " + ReadWritePasswordVariable + ".";
+        ReadOnlyPasswordVariable + " / " + ReadWritePasswordVariable + ".\n" +
+        "--cert-fingerprint <sha256|none> sets or clears the pinned certificate (normally pinned by wapi-test).";
 
     /// <summary>Creates or updates a grid's connection; options left out keep their saved values.</summary>
     private static int SetConnection(Args cli)
@@ -274,6 +278,11 @@ public static class Program
                 : throw new ArgumentException($"\"{port}\" is not a valid port.");
         }
         if (cli.Value("--wapi-version") is { } version) connection.WapiVersion = version;
+        if (cli.Value("--cert-fingerprint") is { } fingerprint)
+        {
+            connection.CertificateFingerprint =
+                fingerprint.Equals("none", StringComparison.OrdinalIgnoreCase) ? null : fingerprint;
+        }
         if (cli.Value("--ro-user") is { } roUser)
         {
             connection.ReadOnly = new Credential
@@ -344,6 +353,7 @@ public static class Program
     {
         Console.WriteLine($"  Address:       {c.Address}{(c.Port == GridConnection.DefaultPort ? "" : $" (port {c.Port})")}");
         Console.WriteLine($"  WAPI version:  {c.WapiVersion ?? "detected on connect"}");
+        Console.WriteLine($"  Certificate:   {(c.CertificateFingerprint is { } pin ? "pinned, SHA-256 " + CertificatePin.Format(pin) : "not pinned yet (pinned by wapi-test)")}");
         Console.WriteLine($"  Read-only:     {Describe(c.ReadOnly, reveal)}");
         Console.WriteLine($"  Read-write:    {Describe(c.ReadWrite, reveal)}");
         Console.WriteLine($"  Saved:         {c.UpdatedUtc.ToLocalTime():yyyy-MM-dd HH:mm}");
@@ -459,6 +469,103 @@ public static class Program
         return 0;
     }
 
+    // ---- WAPI ---------------------------------------------------------------------
+
+    /// <summary>
+    /// Runs a WAPI action with the grid's saved read-only account. If the certificate isn't pinned yet, shows its
+    /// fingerprint and, once the engineer confirms (or passes it with <c>--pin</c>), pins it and retries once.
+    /// A certificate that differs from the pinned one is only replaced with an explicit <c>--pin</c>.
+    /// </summary>
+    private static T WithGrid<T>(ClientWorkspace ws, Client client, ClientGrid grid, Args cli, Func<WapiClient, Task<T>> action)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            var connection = ws.GetConnection(client.Id, grid.Id)
+                             ?? throw new ArgumentException(
+                                 $"{client.Name} \u203a {grid.Name} has no saved connection. Add one with: pfr connection-set");
+            using var wapi = WapiClient.ForReadOnly(connection);
+            try
+            {
+                return action(wapi).GetAwaiter().GetResult();
+            }
+            catch (WapiCertificateException ex) when (attempt == 0)
+            {
+                if (!ConfirmPin(ex, cli)) throw;
+                ws.PinCertificate(client.Id, grid.Id, ex.ObservedFingerprint);
+                Console.Error.WriteLine("Certificate pinned.");
+            }
+        }
+    }
+
+    private static bool ConfirmPin(WapiCertificateException ex, Args cli)
+    {
+        var presented = CertificatePin.Format(ex.ObservedFingerprint);
+        if (cli.Value("--pin") is { } given)
+        {
+            if (CertificatePin.Normalize(given) == ex.ObservedFingerprint) return true;
+            throw new WapiException(
+                $"--pin does not match the certificate the grid presented ({presented}). Nothing was changed.");
+        }
+
+        if (ex.Problem == CertificateProblem.Mismatch)
+        {
+            Console.Error.WriteLine("To trust the new certificate, check it against the grid and run again with --pin " + presented);
+            return false;
+        }
+
+        if (Console.IsInputRedirected)
+        {
+            Console.Error.WriteLine("To trust this certificate, run again with --pin " + presented);
+            return false;
+        }
+
+        Console.Error.WriteLine($"The grid presented this certificate (SHA-256):\n  {presented}");
+        Console.Error.WriteLine("Compare it with the grid's own certificate before trusting it.");
+        Console.Error.Write("Trust and pin this certificate? [y/N] ");
+        return string.Equals(Console.ReadLine()?.Trim(), "y", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>Checks the certificate, the read-only account and the WAPI version of a grid's saved connection.</summary>
+    private static int WapiTest(Args cli)
+    {
+        if (cli.Value("--client") is not { } clientName || cli.Value("--grid") is not { } gridName)
+            return Fail("Usage: pfr wapi-test --client <name> --grid <name> [--pin <sha256>]", 2);
+
+        var ws = Unlock(cli);
+        using var _ = ws.Store;
+        var client = FindClient(ws, clientName);
+        var grid = FindGrid(client, gridName);
+        var info = WithGrid(ws, client, grid, cli, wapi => wapi.ConnectAsync());
+
+        Console.WriteLine($"Connected to {client.Name} \u203a {grid.Name}.");
+        Console.WriteLine($"  Grid name:     {info.GridName ?? "(not reported)"}");
+        Console.WriteLine($"  WAPI version:  {info.ApiVersion}");
+        Console.WriteLine($"  Certificate:   SHA-256 {CertificatePin.Format(info.CertificateFingerprint ?? "")} (matches the pinned certificate)");
+        return 0;
+    }
+
+    /// <summary>Pulls a fresh backup over WAPI and stores it as a snapshot of the grid. The backup is never saved to disk.</summary>
+    private static int WapiBackup(Args cli)
+    {
+        if (cli.Value("--client") is not { } clientName || cli.Value("--grid") is not { } gridName)
+            return Fail("Usage: pfr wapi-backup --client <name> --grid <name> [--label <text>] [--pin <sha256>]", 2);
+
+        var ws = Unlock(cli);
+        using var _ = ws.Store;
+        var client = FindClient(ws, clientName);
+        var grid = FindGrid(client, gridName);
+        var label = cli.Value("--label") ?? "";
+
+        Console.Error.WriteLine("Asking the grid for a backup; this can take a few minutes...");
+        var (saved, info) = WithGrid(ws, client, grid, cli,
+            wapi => GridBackupPull.PullAsync(ws, client.Id, grid.Id, wapi, label));
+
+        Console.WriteLine($"Pulled a backup into {client.Name} \u203a {saved.Name}: " +
+                          $"{Count(info.Members, "member")}, {Count(info.Zones, "zone")}, {Count(info.Networks, "network")}, " +
+                          $"{Count(info.DhcpRanges, "DHCP range")}, {Count(info.Records, "record")}.");
+        return 0;
+    }
+
     // ---- Helpers ----------------------------------------------------------------
 
     private static string Count(int n, string noun) => $"{n} {noun}{(n == 1 ? "" : "s")}";
@@ -521,6 +628,11 @@ public static class Program
         Console.WriteLine("            [--password] [--api-key]           Add or update; secrets are prompted, or set " + LoginPasswordVariable + " / " + LoginApiKeyVariable);
         Console.WriteLine("  login-show --client <n> --title <t> [--reveal]   Show a login (secrets hidden unless --reveal)");
         Console.WriteLine("  login-remove --client <n> --title <t>        Delete a login");
+        Console.WriteLine();
+        Console.WriteLine("WAPI (read-only; uses the grid's saved read-only account and pinned certificate):");
+        Console.WriteLine("  wapi-test --client <n> --grid <n> [--pin <sha256>]    Check certificate, account and WAPI version");
+        Console.WriteLine("  wapi-backup --client <n> --grid <n> [--label <t>] [--pin <sha256>]");
+        Console.WriteLine("                                               Pull a fresh backup and store it as a snapshot (never saved to disk)");
         Console.WriteLine();
         Console.WriteLine("Options:");
         Console.WriteLine($"  --data <folder>   Client data folder (default: {DataLocation.FolderName} next to pfr, or ${DataLocation.EnvironmentVariable})");

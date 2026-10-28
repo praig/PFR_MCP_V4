@@ -82,6 +82,24 @@ pfr login-remove --client "Acme Corp" --title "Cloud API"
 `--password` and `--api-key` prompt without echo (or read `PFR_LOGIN_PASSWORD` / `PFR_LOGIN_API_KEY`); secrets are
 never accepted as arguments.
 
+### Pulling a backup over WAPI
+
+With a grid's connection saved (address, read-only account), the app can reach the grid's WAPI directly. The grid's
+TLS certificate is **pinned** on first connect: you are shown its SHA-256 fingerprint, compare it with the grid's own
+certificate, and trust it once. After that the connection is dropped, before any user id or password is sent, if the
+certificate ever changes. Everything the client does is read-only.
+
+In the desktop app use **Test connection** and **Pull backup now** on the grid's Connection tab. From the command line:
+
+```bash
+pfr wapi-test   --client "Acme Corp" --grid "Production"      # shows the fingerprint to trust on first use
+pfr wapi-backup --client "Acme Corp" --grid "Production" --label "Before upgrade"
+```
+
+A pulled backup is parsed as it downloads and is **never written to disk**; only the parsed inventory is kept, as a
+snapshot of the grid. The read-only account needs permission to take backups on the grid. For scripts, pass the
+fingerprint you have verified with `--pin <sha256>`.
+
 Summarize a grid backup from the command line:
 
 ```bash

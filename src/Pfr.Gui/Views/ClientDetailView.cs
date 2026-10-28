@@ -259,6 +259,11 @@ public sealed class ClientDetailView : UserControl
     private Control BuildGrids()
     {
         _connection = new GridConnectionEditor(_workspace);
+        _connection.SnapshotAdded += (_, e) =>
+        {
+            Reload(e.Grid.Id);
+            _host.SetStatus($"Pulled a backup of {e.Grid.Name} over WAPI into {Client.Name}.");
+        };
         _gridList = new ListBox
         {
             Background = Brushes.Transparent,

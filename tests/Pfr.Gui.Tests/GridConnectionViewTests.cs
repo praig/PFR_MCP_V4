@@ -4,6 +4,8 @@ using Avalonia.Controls;
 using Avalonia.Threading;
 using Pfr.Core.Clients;
 using Pfr.Core.Storage;
+using Pfr.Core.Tests.Wapi;
+using Pfr.Core.Wapi;
 using Pfr.Gui.Views;
 
 namespace Pfr.Gui.Tests;
@@ -188,5 +190,111 @@ public class GridConnectionViewTests
         detail.ConnectionEditor.Address.Text = "gm.acme.test";
         Assert.False(detail.ConnectionEditor.Save());
         Assert.Contains("Select a grid", detail.ConnectionEditor.MessageText);
+    }
+
+    // ---- WAPI: test connection and pull a backup ---------------------------------------
+
+    private static void FillConnection(GridConnectionEditor editor, FakeWapiServer server)
+    {
+        editor.Address.Text = "127.0.0.1";
+        editor.Port.Text = server.Port.ToString();
+        editor.ReadOnlyUser.Text = server.User;
+        editor.ReadOnlyPassword.Text = server.Password;
+    }
+
+    [AvaloniaFact]
+    public async Task Test_connection_shows_an_unknown_certificate_and_works_once_it_is_trusted()
+    {
+        using var server = new FakeWapiServer();
+        var (folder, client) = StoreWithGrids("Production");
+        var (window, detail) = OpenClient(folder, client);
+        var grid = detail.Grids.Single();
+        detail.SelectGrid(grid.Id);
+        var editor = detail.ConnectionEditor;
+        FillConnection(editor, server);
+
+        Assert.False(await editor.TestAsync());
+        var pending = Assert.IsType<WapiCertificateException>(editor.PendingCertificate);
+        Assert.Equal(CertificateProblem.NotPinned, pending.Problem);
+        Assert.Equal(server.Fingerprint, pending.ObservedFingerprint);
+        Assert.Empty(server.Requests); // nothing, so no user id or password, reached the grid
+        Snapshot(window, "34-trust-certificate");
+
+        Assert.True(editor.TrustPending());
+        Assert.Null(editor.PendingCertificate);
+        var saved = window.Clients.Workspace!.GetConnection(client.Id, grid.Id)!;
+        Assert.Equal(server.Fingerprint, saved.CertificateFingerprint);
+        Assert.Equal(CertificatePin.Format(server.Fingerprint), editor.FingerprintBox.Text);
+
+        Assert.True(await editor.TestAsync());
+        Assert.Contains("Lab Grid", editor.MessageText);
+        Assert.Contains("v2.12", editor.MessageText);
+    }
+
+    [AvaloniaFact]
+    public async Task A_changed_certificate_is_refused_and_only_replaced_when_confirmed()
+    {
+        using var server = new FakeWapiServer();
+        var (folder, client) = StoreWithGrids("Production");
+        var (window, detail) = OpenClient(folder, client);
+        var grid = detail.Grids.Single();
+        detail.SelectGrid(grid.Id);
+        var editor = detail.ConnectionEditor;
+        var oldPin = new string('0', 64);
+        FillConnection(editor, server);
+        editor.FingerprintBox.Text = oldPin;
+
+        Assert.False(await editor.TestAsync());
+        var pending = Assert.IsType<WapiCertificateException>(editor.PendingCertificate);
+        Assert.Equal(CertificateProblem.Mismatch, pending.Problem);
+        Assert.Equal(oldPin, pending.PinnedFingerprint);
+        Assert.Empty(server.Requests);
+        Snapshot(window, "35-certificate-changed");
+
+        // Refusing leaves the old pin in place; only an explicit decision replaces it.
+        var ws = window.Clients.Workspace!;
+        Assert.Equal(oldPin, ws.GetConnection(client.Id, grid.Id)!.CertificateFingerprint);
+        Assert.True(editor.TrustPending());
+        Assert.Equal(server.Fingerprint, ws.GetConnection(client.Id, grid.Id)!.CertificateFingerprint);
+    }
+
+    [AvaloniaFact]
+    public async Task Pull_backup_saves_a_snapshot_and_refreshes_the_page()
+    {
+        using var server = new FakeWapiServer();
+        var (folder, client) = StoreWithGrids("Production");
+        var (window, detail) = OpenClient(folder, client);
+        var grid = detail.Grids.Single();
+        detail.SelectGrid(grid.Id);
+        var editor = detail.ConnectionEditor;
+        FillConnection(editor, server);
+        editor.FingerprintBox.Text = CertificatePin.Format(server.Fingerprint);
+
+        var added = new List<SnapshotInfo>();
+        editor.SnapshotAdded += (_, e) => added.Add(e.Snapshot);
+
+        Assert.True(await editor.PullBackupAsync("Pulled over WAPI"));
+
+        var snapshot = Assert.Single(Assert.Single(window.Clients.Workspace!.GetClient(client.Id).Grids).Snapshots);
+        Assert.Equal(("Lab Grid", "Pulled over WAPI"), (snapshot.GridName, snapshot.Label));
+        Assert.Equal(server.BackupSha256, snapshot.SourceSha256);
+        Assert.Equal(snapshot.Id, Assert.Single(added).Id);
+        Assert.Contains("Saved a snapshot", editor.MessageText);
+        Assert.Equal(snapshot.Id, Assert.Single(detail.Grids.Single().Snapshots).Id); // the page itself was refreshed
+        Snapshot(window, "36-pulled-backup");
+    }
+
+    [AvaloniaFact]
+    public async Task Connecting_needs_a_read_only_account()
+    {
+        var (folder, client) = StoreWithGrids("Production");
+        var (_, detail) = OpenClient(folder, client);
+        detail.SelectGrid(detail.Grids.Single().Id);
+        var editor = detail.ConnectionEditor;
+        editor.Address.Text = "127.0.0.1";
+
+        Assert.False(await editor.TestAsync());
+        Assert.Contains("read-only account", editor.MessageText);
+        Assert.False(await editor.PullBackupAsync());
     }
 }

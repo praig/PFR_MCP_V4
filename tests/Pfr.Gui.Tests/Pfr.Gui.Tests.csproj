@@ -17,6 +17,8 @@
     <Using Include="Xunit" />
     <!-- Reuse the synthetic backup from the core tests. -->
     <Compile Include="..\Pfr.Core.Tests\Nios\OneDbFixture.cs" Link="OneDbFixture.cs" />
+    <!-- A local HTTPS server that behaves like a grid's WAPI, for the connection and backup-pull tests. -->
+    <Compile Include="..\Pfr.Core.Tests\Wapi\FakeWapiServer.cs" Link="FakeWapiServer.cs" />
   </ItemGroup>
 
   <ItemGroup>
