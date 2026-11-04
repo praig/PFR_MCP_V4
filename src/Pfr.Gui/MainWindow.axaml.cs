@@ -57,7 +57,7 @@ public partial class MainWindow : Window, IInventoryHost
             if (_updatingPickers || GridPicker.SelectedItem is not GridChoice choice) return;
             await Clients.OpenGridAsync(choice.ClientId, choice.GridId);
         };
-        SaveToClientButton.Click += (_, _) => SaveLoadedToClient();
+        SaveToClientButton.Click += async (_, _) => await SaveLoadedToClientAsync();
         RefreshPickers();
 
         foreach (var (module, title, summary) in ModuleCatalog.All)
@@ -151,12 +151,12 @@ public partial class MainWindow : Window, IInventoryHost
         }
     }
 
-    /// <summary>Parses a backup off the UI thread and shows its inventory.</summary>
+    /// <summary>Parses a backup off the UI thread and shows its inventory. The window stays usable throughout.</summary>
     public async Task LoadBackupAsync(string path)
     {
         var name = Path.GetFileName(path);
-        StatusText.Text = $"Reading {name}…";
         OpenButton.IsEnabled = false;
+        using var busy = BeginBusy($"Reading {name}\u2026");
         try
         {
             var watch = Stopwatch.StartNew();
@@ -169,7 +169,9 @@ public partial class MainWindow : Window, IInventoryHost
                 return (inv, src);
             });
 
-            ShowLoaded(inventory, source, snapshot: null);
+            // Building the tables is the other slow part: it happens in the background too.
+            StatusText.Text = $"Preparing {name}\u2026";
+            if (!await ShowLoadedAsync(inventory, source, snapshot: null)) return; // another grid was opened meanwhile
             RefreshPickers();
             LoadedText.Text = $"{inventory.GridName}  ·  NIOS {ShortVersion(inventory.NiosVersion)}  ·  {name} (not saved)";
             Title = $"{inventory.GridName ?? name} — {AppInfo.ProductName}";
@@ -192,13 +194,34 @@ public partial class MainWindow : Window, IInventoryHost
         }
     }
 
-    /// <summary>Shows a client's stored snapshot in Inventory and remembers it for next time.</summary>
+    /// <summary>
+    /// Shows a client's stored snapshot in Inventory and remembers it for next time. The tables are built on the calling
+    /// thread; the application itself uses <see cref="ShowSnapshotAsync"/>, which does not hold up the window.
+    /// </summary>
     public void ShowSnapshot(Client client, ClientGrid grid, SnapshotInfo snapshot, GridInventory inventory,
         bool switchToInventory)
     {
-        ShowLoaded(inventory,
-            new LoadedSource(snapshot.SourceFileName, snapshot.SourceBytes, snapshot.SourceSha256),
-            (client, grid, snapshot));
+        ShowLoaded(inventory, SourceOf(snapshot), (client, grid, snapshot));
+        SnapshotShown(client, grid, snapshot, inventory, switchToInventory);
+    }
+
+    /// <summary>
+    /// As <see cref="ShowSnapshot"/>, but the tables are built in the background: a "preparing" message shows meanwhile and
+    /// the task completes when the grid is on screen. Nothing happens if another grid was opened in the meantime.
+    /// </summary>
+    public async Task ShowSnapshotAsync(Client client, ClientGrid grid, SnapshotInfo snapshot, GridInventory inventory,
+        bool switchToInventory)
+    {
+        if (!await ShowLoadedAsync(inventory, SourceOf(snapshot), (client, grid, snapshot))) return;
+        SnapshotShown(client, grid, snapshot, inventory, switchToInventory);
+    }
+
+    private static LoadedSource SourceOf(SnapshotInfo snapshot) =>
+        new(snapshot.SourceFileName, snapshot.SourceBytes, snapshot.SourceSha256);
+
+    private void SnapshotShown(Client client, ClientGrid grid, SnapshotInfo snapshot, GridInventory inventory,
+        bool switchToInventory)
+    {
         Ipam.PreferClient(client.Id);
         var when = snapshot.ImportedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
         LoadedText.Text = $"NIOS {ShortVersion(inventory.NiosVersion)}  ·  snapshot {when}" +
@@ -221,14 +244,78 @@ public partial class MainWindow : Window, IInventoryHost
 
     private void ShowLoaded(GridInventory inventory, LoadedSource source, (Client, ClientGrid, SnapshotInfo)? snapshot)
     {
+        // The same grid again (it has just been saved to a client, say) needs no new tables.
+        var shownAlready = ReferenceEquals(LoadedInventory, inventory) && Inventory.SectionNames.Count > 0;
+        SetLoaded(inventory, source, snapshot);
+        if (!shownAlready) Inventory.ShowInventory(inventory);
+        LoadedChanged(inventory, source, snapshot);
+    }
+
+    /// <summary>
+    /// Makes a grid the one being worked on. Its tables are built in the background while the rest of the window stays
+    /// usable. Returns false (and does nothing more) if another grid was opened before this one was ready.
+    /// </summary>
+    private async Task<bool> ShowLoadedAsync(GridInventory inventory, LoadedSource source, (Client, ClientGrid, SnapshotInfo)? snapshot)
+    {
+        var shownAlready = ReferenceEquals(LoadedInventory, inventory) && Inventory.SectionNames.Count > 0 && !Inventory.IsPreparing;
+        SetLoaded(inventory, source, snapshot);
+        if (!shownAlready)
+        {
+            await Inventory.ShowInventoryAsync(inventory);
+            if (!ReferenceEquals(LoadedInventory, inventory)) return false;
+        }
+        LoadedChanged(inventory, source, snapshot);
+        return true;
+    }
+
+    private void SetLoaded(GridInventory inventory, LoadedSource source, (Client, ClientGrid, SnapshotInfo)? snapshot)
+    {
         LoadedInventory = inventory;
         LoadedSource = source;
         LoadedSnapshot = snapshot;
-        Inventory.ShowInventory(inventory);
+    }
+
+    private void LoadedChanged(GridInventory inventory, LoadedSource source, (Client, ClientGrid, SnapshotInfo)? snapshot)
+    {
         Reports.ShowInventory(inventory, snapshot is { } x
-            ? $"{x.Item1.Name} › {x.Item2.Name}  (snapshot {x.Item3.ImportedUtc.ToLocalTime():yyyy-MM-dd HH:mm})"
+            ? $"{x.Item1.Name} \u203a {x.Item2.Name}  (snapshot {x.Item3.ImportedUtc.ToLocalTime():yyyy-MM-dd HH:mm})"
             : $"{inventory.GridName}  ({source.FileName}, not saved to a client)");
         UpdateSaveBar();
+    }
+
+    // ---- Work in the background ---------------------------------------------
+
+    private int _busyCount;
+
+    /// <summary>True while any background work started with <see cref="BeginBusy"/> is still going.</summary>
+    public bool IsBusy => _busyCount > 0;
+
+    /// <summary>
+    /// Marks the start of work that takes a while: the status bar shows <paramref name="status"/> and a moving bar until the
+    /// returned scope is disposed. Scopes can overlap; the bar goes when the last one ends. Call it from the UI thread.
+    /// </summary>
+    public IDisposable BeginBusy(string? status = null)
+    {
+        if (status is not null) StatusText.Text = status;
+        if (_busyCount++ == 0) BusyBar.IsVisible = true;
+        return new BusyScope(this);
+    }
+
+    private void EndBusy()
+    {
+        if (--_busyCount == 0) BusyBar.IsVisible = false;
+    }
+
+    private sealed class BusyScope(MainWindow window) : IDisposable
+    {
+        private bool _ended;
+
+        public void Dispose()
+        {
+            if (_ended) return;
+            _ended = true;
+            window.EndBusy();
+        }
     }
 
     // ---- Client › grid switcher and save bar --------------------------------
@@ -306,30 +393,74 @@ public partial class MainWindow : Window, IInventoryHost
                 : $"{LoadedInventory!.GridName} isn't saved to a client yet.";
     }
 
-    /// <summary>Saves the backup open in Inventory to the chosen client, as a snapshot of its grid.</summary>
+    /// <summary>
+    /// Saves the backup open in Inventory to the chosen client, as a snapshot of its grid. This writes on the calling
+    /// thread; the Save button uses <see cref="SaveLoadedToClientAsync"/>, which does not hold up the window.
+    /// </summary>
     public void SaveLoadedToClient(string? clientId = null)
     {
-        var workspace = Clients.Workspace;
-        clientId ??= (SaveClientPicker.SelectedItem as ClientChoice)?.Id;
-        if (workspace is null || LoadedInventory is not { } inventory || LoadedSource is not { } source) return;
-        if (clientId is null)
-        {
-            StatusText.Text = "Choose a client to save this grid to.";
-            return;
-        }
+        if (!CanSave(ref clientId, out var workspace, out var inventory, out var source)) return;
 
         try
         {
-            var (grid, info) = workspace.AddSnapshot(clientId, inventory, source.FileName, source.Bytes, source.Sha256);
-            var client = workspace.GetClient(clientId);
+            var (grid, info) = workspace.AddSnapshot(clientId!, inventory, source.FileName, source.Bytes, source.Sha256);
+            var client = workspace.GetClient(clientId!);
             Clients.RefreshClients(clientId);
             ShowSnapshot(client, client.FindGrid(grid.Id)!, info, inventory, switchToInventory: false);
-            StatusText.Text = $"Saved {source.FileName} to {client.Name} › {grid.Name}.";
+            StatusText.Text = $"Saved {source.FileName} to {client.Name} \u203a {grid.Name}.";
         }
         catch (Exception ex) when (ex is InvalidDataException or ArgumentException or IOException)
         {
             StatusText.Text = $"Could not save: {ex.Message}";
         }
+    }
+
+    /// <summary>
+    /// Saves the backup open in Inventory to the chosen client without holding up the window: the snapshot is serialised,
+    /// compressed, encrypted and written in the background, and the button is off until it is done.
+    /// </summary>
+    public async Task SaveLoadedToClientAsync(string? clientId = null)
+    {
+        if (!CanSave(ref clientId, out var workspace, out var inventory, out var source)) return;
+        var id = clientId!;
+
+        SaveToClientButton.IsEnabled = false;
+        using var busy = BeginBusy($"Saving {source.FileName}\u2026");
+        try
+        {
+            var (grid, info) = await Task.Run(() => workspace.AddSnapshot(id, inventory, source.FileName, source.Bytes, source.Sha256));
+            var client = workspace.GetClient(id);
+            Clients.RefreshClients(id);
+
+            // If another grid was opened while this saved, leave the screen as it is now.
+            if (ReferenceEquals(LoadedInventory, inventory))
+                ShowSnapshot(client, client.FindGrid(grid.Id)!, info, inventory, switchToInventory: false); // same tables: not rebuilt
+            StatusText.Text = $"Saved {source.FileName} to {client.Name} \u203a {grid.Name}.";
+        }
+        catch (Exception ex) when (ex is InvalidDataException or ArgumentException or IOException)
+        {
+            StatusText.Text = $"Could not save: {ex.Message}";
+        }
+        finally
+        {
+            SaveToClientButton.IsEnabled = true;
+        }
+    }
+
+    /// <summary>Whether there is a grid, a client and an unlocked store to save with; says what is missing when not.</summary>
+    private bool CanSave(ref string? clientId, out ClientWorkspace workspace, out GridInventory inventory, out LoadedSource source)
+    {
+        clientId ??= (SaveClientPicker.SelectedItem as ClientChoice)?.Id;
+        workspace = Clients.Workspace!;
+        inventory = LoadedInventory!;
+        source = LoadedSource!;
+        if (Clients.Workspace is null || LoadedInventory is null || LoadedSource is null) return false;
+        if (clientId is null)
+        {
+            StatusText.Text = "Choose a client to save this grid to.";
+            return false;
+        }
+        return true;
     }
 
     private sealed record GridChoice(string ClientId, string GridId, string Text)

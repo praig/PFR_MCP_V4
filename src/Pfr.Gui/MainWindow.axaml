@@ -34,10 +34,14 @@
       </StackPanel>
     </Border>
 
-    <!-- Status bar -->
+    <!-- Status bar: what is happening, and a moving bar while something runs in the background -->
     <Border DockPanel.Dock="Bottom" Padding="16,4"
             Background="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}">
-      <TextBlock x:Name="StatusText" FontSize="12" Opacity="0.8" Text="Ready" />
+      <Grid ColumnDefinitions="*,Auto">
+        <TextBlock x:Name="StatusText" FontSize="12" Opacity="0.8" Text="Ready" TextTrimming="CharacterEllipsis" />
+        <ProgressBar x:Name="BusyBar" Grid.Column="1" Width="160" Height="6" Margin="12,0,0,0"
+                     IsIndeterminate="True" IsVisible="False" VerticalAlignment="Center" />
+      </Grid>
     </Border>
 
     <TabControl x:Name="ModuleTabs" Margin="4,0,4,0" />

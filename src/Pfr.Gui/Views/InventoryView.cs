@@ -17,7 +17,14 @@ public sealed class InventoryView : UserControl
 {
     private readonly ListBox _sections;
     private readonly ContentControl _body;
+
+    /// <summary>The controls made so far: a section's grid is only created the first time it is opened.</summary>
     private readonly Dictionary<string, Control> _pages = new();
+
+    private IReadOnlyDictionary<string, object> _definitions = new Dictionary<string, object>();
+    private IReadOnlyList<SectionItem> _items = [];
+    private GridInventory? _shown;
+    private int _showVersion;
 
     public InventoryView()
     {
@@ -29,7 +36,7 @@ public sealed class InventoryView : UserControl
         };
         _sections.SelectionChanged += (_, _) =>
         {
-            if (_sections.SelectedItem is SectionItem item && _pages.TryGetValue(item.Name, out var page))
+            if (_sections.SelectedItem is SectionItem item && PageFor(item.Name) is { } page)
             {
                 _body!.Content = page;
             }
@@ -57,7 +64,10 @@ public sealed class InventoryView : UserControl
     /// <summary>Raised when the user clicks "Open backup" in the empty state.</summary>
     public event EventHandler? OpenRequested;
 
-    public IReadOnlyList<string> SectionNames => _pages.Keys.ToList();
+    public IReadOnlyList<string> SectionNames => _items.Select(i => i.Name).ToList();
+
+    /// <summary>True while the tables of a grid are being built in the background.</summary>
+    public bool IsPreparing { get; private set; }
 
     public string? SelectedSection => (_sections.SelectedItem as SectionItem)?.Name;
 
@@ -65,7 +75,12 @@ public sealed class InventoryView : UserControl
 
     public void ShowEmpty(string? message = null)
     {
+        _showVersion++; // a grid still being prepared is no longer wanted
+        IsPreparing = false;
         _pages.Clear();
+        _definitions = new Dictionary<string, object>();
+        _items = [];
+        _shown = null;
         _sections.ItemsSource = null;
         _body.Content = null;
 
@@ -105,35 +120,134 @@ public sealed class InventoryView : UserControl
         };
     }
 
-    public void ShowInventory(GridInventory inventory)
+    /// <summary>An inventory's tables, built and ready to show (see <see cref="Prepare"/>). Holds data only, no controls.</summary>
+    public sealed class PreparedInventory
     {
-        _pages.Clear();
-        var items = new List<SectionItem>();
+        internal PreparedInventory(GridInventory inventory, IReadOnlyList<SectionItem> items, IReadOnlyDictionary<string, object> definitions)
+        {
+            Inventory = inventory;
+            Items = items;
+            Definitions = definitions;
+        }
 
-        _pages["Overview"] = BuildOverview(inventory);
-        items.Add(new SectionItem("Overview", null));
+        public GridInventory Inventory { get; }
+        internal IReadOnlyList<SectionItem> Items { get; }
+        internal IReadOnlyDictionary<string, object> Definitions { get; }
+    }
+
+    /// <summary>
+    /// Builds every section's rows. This is the slow part of showing a grid (a row for every record), and it makes no
+    /// controls, so it can run on any thread; <see cref="ShowInventoryAsync"/> does that.
+    /// </summary>
+    public static PreparedInventory Prepare(GridInventory inventory)
+    {
+        var items = new List<SectionItem> { new("Overview", null) };
+        var definitions = new Dictionary<string, object>();
 
         foreach (var section in InventoryTables.Build(inventory))
         {
             switch (section)
             {
                 case TableDefinition table:
-                    _pages[table.Title] = new FilterableTable(table);
+                    definitions[table.Title] = table;
                     items.Add(new SectionItem(table.Title, table.Rows.Count));
                     break;
                 case TreeTableDefinition tree:
-                    _pages[tree.Title] = new TreeTable(tree);
-                    var count = tree.Roots.SelectMany(r => r.SelfAndDescendants()).Count(r => !r.IsGroup);
-                    items.Add(new SectionItem(tree.Title, count));
+                    definitions[tree.Title] = tree;
+                    items.Add(new SectionItem(tree.Title, tree.Roots.SelectMany(r => r.SelfAndDescendants()).Count(r => !r.IsGroup)));
                     break;
             }
         }
+        return new PreparedInventory(inventory, items, definitions);
+    }
 
-        _sections.ItemsSource = items;
+    /// <summary>Shows a grid, building its tables on the calling thread (the window uses <see cref="ShowInventoryAsync"/>).</summary>
+    public void ShowInventory(GridInventory inventory)
+    {
+        _showVersion++;
+        Show(Prepare(inventory));
+    }
+
+    /// <summary>
+    /// Shows a grid without holding up the window: a "preparing" message is shown while its tables are built on a
+    /// background thread, then the sections appear. If another grid is shown (or the view is emptied) in the meantime,
+    /// this one is dropped.
+    /// </summary>
+    public async Task ShowInventoryAsync(GridInventory inventory)
+    {
+        var version = ++_showVersion;
+        IsPreparing = true;
+        Content = Preparing(inventory);
+        try
+        {
+            var prepared = await Task.Run(() => Prepare(inventory));
+            if (version != _showVersion) return;
+            Show(prepared);
+        }
+        catch (Exception ex)
+        {
+            if (version == _showVersion) ShowEmpty($"Could not prepare the tables: {ex.Message}");
+            throw;
+        }
+    }
+
+    private void Show(PreparedInventory prepared)
+    {
+        IsPreparing = false;
+        _pages.Clear();
+        _definitions = prepared.Definitions;
+        _items = prepared.Items;
+        _shown = prepared.Inventory;
+
+        _sections.ItemsSource = _items.ToList();
         Content = _loadedLayout;
         _sections.SelectedIndex = 0;
-        _body.Content = _pages["Overview"]; // also when Overview was already selected
+        _body.Content = PageFor("Overview"); // also when Overview was already selected
     }
+
+    /// <summary>
+    /// The control for a section, made the first time it is asked for and kept after that, so opening a grid does not
+    /// build a grid control for every table up front.
+    /// </summary>
+    private Control? PageFor(string name)
+    {
+        if (_pages.TryGetValue(name, out var page)) return page;
+
+        Control? made = null;
+        if (name == "Overview" && _shown is { } inventory)
+        {
+            made = BuildOverview(inventory);
+        }
+        else if (_definitions.TryGetValue(name, out var definition))
+        {
+            if (definition is TableDefinition table) made = new FilterableTable(table);
+            else if (definition is TreeTableDefinition tree) made = new TreeTable(tree);
+        }
+
+        if (made is not null) _pages[name] = made;
+        return made;
+    }
+
+    private static Control Preparing(GridInventory inventory) => new StackPanel
+    {
+        HorizontalAlignment = HorizontalAlignment.Center,
+        VerticalAlignment = VerticalAlignment.Center,
+        Spacing = 14,
+        Children =
+        {
+            new TextBlock
+            {
+                Text = $"Preparing {inventory.GridName ?? "the grid"}\u2026",
+                FontSize = 20, FontWeight = FontWeight.SemiBold, HorizontalAlignment = HorizontalAlignment.Center,
+            },
+            new TextBlock
+            {
+                Text = "Building the tables. The window stays usable while this runs.",
+                Opacity = 0.7, HorizontalAlignment = HorizontalAlignment.Center,
+            },
+            new ProgressBar { IsIndeterminate = true, Width = 280 },
+        },
+    };
 
     public void SelectSection(string name)
     {
@@ -240,7 +354,7 @@ public sealed class InventoryView : UserControl
 
     private static string Plural(int count, string noun) => $"{count:N0} {noun}{(count == 1 ? "" : "s")}";
 
-    private sealed record SectionItem(string Name, int? Count)
+    internal sealed record SectionItem(string Name, int? Count)
     {
         public override string ToString() => Count is null ? Name : $"{Name}  ({Count:N0})";
     }

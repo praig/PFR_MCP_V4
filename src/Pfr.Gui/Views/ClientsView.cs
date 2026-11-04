@@ -23,7 +23,38 @@ public interface IInventoryHost
     /// <summary>Shows a stored snapshot in Inventory (optionally switching to the Inventory tab).</summary>
     void ShowSnapshot(Client client, ClientGrid grid, SnapshotInfo snapshot, GridInventory inventory, bool switchToInventory);
 
+    /// <summary>
+    /// Shows a stored snapshot in Inventory without holding up the window: the tables are built in the background and the
+    /// task completes when they are on screen. This is what the application uses; <see cref="ShowSnapshot"/> does the same
+    /// work on the calling thread.
+    /// </summary>
+    Task ShowSnapshotAsync(Client client, ClientGrid grid, SnapshotInfo snapshot, GridInventory inventory, bool switchToInventory)
+    {
+        ShowSnapshot(client, grid, snapshot, inventory, switchToInventory);
+        return Task.CompletedTask;
+    }
+
     void SetStatus(string text);
+
+    /// <summary>
+    /// Marks the start of work that takes a while: the window shows a busy bar (and <paramref name="status"/>) until the
+    /// returned scope is disposed. Scopes can overlap.
+    /// </summary>
+    IDisposable BeginBusy(string? status = null)
+    {
+        if (status is not null) SetStatus(status);
+        return NoBusyScope.Instance;
+    }
+}
+
+/// <summary>A busy scope that does nothing (for hosts with no busy bar).</summary>
+internal sealed class NoBusyScope : IDisposable
+{
+    public static readonly NoBusyScope Instance = new();
+
+    public void Dispose()
+    {
+    }
 }
 
 /// <summary>
@@ -363,7 +394,7 @@ public sealed class ClientsView : UserControl
         if (items?.OfType<ClientItem>().FirstOrDefault(i => i.Client.Id == id) is { } item) _clientList!.SelectedItem = item;
     }
 
-    /// <summary>Opens a grid's newest snapshot in Inventory: no backup needed.</summary>
+    /// <summary>Opens a grid's newest snapshot in Inventory: no backup needed. Nothing here holds up the window.</summary>
     public async Task OpenGridAsync(string clientId, string gridId, bool switchToInventory = true)
     {
         if (_workspace is null) return;
@@ -371,13 +402,14 @@ public sealed class ClientsView : UserControl
         {
             var client = _workspace.GetClient(clientId);
             if (client.FindGrid(gridId) is not { } grid) return;
+            using var busy = _host.BeginBusy($"Opening {client.Name} \u203a {grid.Name}\u2026");
             var latest = await Task.Run(() => _workspace.LoadLatest(clientId, gridId));
             if (latest is null)
             {
-                _host.SetStatus($"{client.Name} › {grid.Name} has no snapshots yet.");
+                _host.SetStatus($"{client.Name} \u203a {grid.Name} has no snapshots yet.");
                 return;
             }
-            _host.ShowSnapshot(client, grid, latest.Value.Snapshot, latest.Value.Inventory, switchToInventory);
+            await _host.ShowSnapshotAsync(client, grid, latest.Value.Snapshot, latest.Value.Inventory, switchToInventory);
         }
         catch (Exception ex) when (ex is IOException or InvalidDataException or System.Text.Json.JsonException
                                        or System.Security.Cryptography.CryptographicException)
