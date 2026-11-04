@@ -53,6 +53,10 @@ public sealed class ReportsView : UserControl
     private bool _showResolving;
     private bool _showNotVerified = true;
 
+    // The CNAME report is worked out in the background; a newer choice makes an older result be dropped.
+    private int _renderVersion;
+    private (GridInventory Inventory, DanglingCnameResult Result)? _cnameCache;
+
     public ReportsView(ReportTemplateStore templates)
     {
         _templates = templates;
@@ -168,6 +172,12 @@ public sealed class ReportsView : UserControl
 
     public DanglingCnameResult? CnameResult { get; private set; }
 
+    /// <summary>
+    /// Completes when the built-in report on screen has been worked out and shown. The CNAME report follows every CNAME in
+    /// the grid, which takes a while on a big one, so it runs in the background; the other pages are ready at once.
+    /// </summary>
+    public Task ReportTask { get; private set; } = Task.CompletedTask;
+
     /// <summary>Selects a built-in report, or a report template by name.</summary>
     public void SelectReport(string name)
     {
@@ -216,7 +226,11 @@ public sealed class ReportsView : UserControl
     public void ShowInventory(GridInventory? inventory, string context)
     {
         // The loaded copy of the old grid's data goes as soon as another grid (or none) is shown.
-        if (!ReferenceEquals(inventory, _inventory)) _cache.Release();
+        if (!ReferenceEquals(inventory, _inventory))
+        {
+            _cache.Release();
+            _cnameCache = null;
+        }
         _inventory = inventory;
         _context = context;
         Render();
@@ -256,6 +270,8 @@ public sealed class ReportsView : UserControl
 
     private void Render()
     {
+        _renderVersion++; // a report still being worked out for something else is no longer wanted
+        ReportTask = Task.CompletedTask;
         CurrentTable = null;
         LicenseResult = null;
         CnameResult = null;
@@ -284,10 +300,16 @@ public sealed class ReportsView : UserControl
             return;
         }
 
+        if (SelectedReport == DanglingCnames)
+        {
+            _body.Content = Working(DanglingCnames, DanglingCnameReport.Description, "Checking every CNAME\u2026");
+            ReportTask = ShowCnamesAsync(_inventory, _renderVersion);
+            return;
+        }
+
         _body.Content = SelectedReport switch
         {
             LicenseExpiry => LicensePage(_inventory),
-            DanglingCnames => CnamePage(_inventory),
             _ => null,
         };
     }
@@ -347,10 +369,60 @@ public sealed class ReportsView : UserControl
 
     // ---- Dangling CNAMEs --------------------------------------------------------
 
-    private Control CnamePage(GridInventory inv)
+    /// <summary>
+    /// Follows every CNAME and builds the table's rows on a background thread, then shows the page. The result is kept for
+    /// as long as the same grid is open, so changing a filter only rebuilds the rows.
+    /// </summary>
+    private async Task ShowCnamesAsync(GridInventory inv, int version)
     {
-        var result = CnameResult = DanglingCnameReport.Run(inv);
+        var showResolving = _showResolving;
+        var showNotVerified = _showNotVerified;
+        var known = _cnameCache is { } cached && ReferenceEquals(cached.Inventory, inv) ? cached.Result : null;
 
+        try
+        {
+            var (result, definition) = await Task.Run(() =>
+            {
+                var found = known ?? DanglingCnameReport.Run(inv);
+                return (found, CnameTable(found, showResolving, showNotVerified));
+            });
+            if (version != _renderVersion) return; // another report or grid was chosen while this ran
+
+            _cnameCache = (inv, result);
+            CnameResult = result;
+            _body.Content = CnamePage(result, definition);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (version == _renderVersion)
+                _body.Content = Page(DanglingCnames, DanglingCnameReport.Description, null, null, Ui.Muted($"Could not run the report: {ex.Message}"));
+        }
+    }
+
+    /// <summary>The rows to show for the chosen filters. Makes no controls, so it can run on any thread.</summary>
+    private static TableDefinition CnameTable(DanglingCnameResult result, bool showResolving, bool showNotVerified)
+    {
+        var rows = result.Rows.Where(r =>
+            (r.Outcome != CnameOutcome.Resolves || showResolving)
+            && (r.Outcome is not (CnameOutcome.External or CnameOutcome.Delegated) || showNotVerified || r.TakeoverProvider is not null));
+
+        return new TableDefinition(
+            "dangling CNAMEs",
+            [
+                new("Severity", ColumnKind.Status, 100), new("Result", Width: 230), new("CNAME", Width: 260),
+                new("Target", Width: 240), new("View", Width: 130), new("Zone", Width: 180),
+                new("Chain", Width: 360), new("Host alias"), new("Provider", Width: 160), new("Detail", Width: 480),
+            ],
+            rows.Select(r => new TableRow(
+            [
+                r.Severity == ReportSeverity.None ? "" : r.Severity.ToString(),
+                DanglingCnameReport.Describe(r.Outcome), r.Name, r.Target.TrimEnd('.'), r.View, r.Zone, r.Chain,
+                r.FromHost ? "Yes" : "", r.TakeoverProvider ?? "", r.Detail,
+            ])).ToList());
+    }
+
+    private Control CnamePage(DanglingCnameResult result, TableDefinition definition)
+    {
         var resolving = new CheckBox { Content = "Show CNAMEs that resolve", IsChecked = _showResolving };
         resolving.IsCheckedChanged += (_, _) => SetCnameFilters(resolving.IsChecked == true, _showNotVerified);
         var external = new CheckBox { Content = "Show targets outside the grid (not verified)", IsChecked = _showNotVerified };
@@ -365,27 +437,25 @@ public sealed class ReportsView : UserControl
         var scope = Ui.Muted($"{result.Total} CNAMEs checked, including host aliases. Chains longer than " +
                              $"{result.MaxChain} are flagged. RPZ rules aren't checked.");
 
-        var rows = result.Rows.Where(r =>
-            (r.Outcome != CnameOutcome.Resolves || _showResolving)
-            && (r.Outcome is not (CnameOutcome.External or CnameOutcome.Delegated) || _showNotVerified || r.TakeoverProvider is not null));
-
-        var table = CurrentTable = new FilterableTable(new TableDefinition(
-            "dangling CNAMEs",
-            [
-                new("Severity", ColumnKind.Status, 100), new("Result", Width: 230), new("CNAME", Width: 260),
-                new("Target", Width: 240), new("View", Width: 130), new("Zone", Width: 180),
-                new("Chain", Width: 360), new("Host alias"), new("Provider", Width: 160), new("Detail", Width: 480),
-            ],
-            rows.Select(r => new TableRow(
-            [
-                r.Severity == ReportSeverity.None ? "" : r.Severity.ToString(),
-                DanglingCnameReport.Describe(r.Outcome), r.Name, r.Target.TrimEnd('.'), r.View, r.Zone, r.Chain,
-                r.FromHost ? "Yes" : "", r.TakeoverProvider ?? "", r.Detail,
-            ])).ToList()));
+        var table = CurrentTable = new FilterableTable(definition);
 
         return Page(DanglingCnames, DanglingCnameReport.Description, options,
             new StackPanel { Spacing = 4, Children = { summary, scope } }, table);
     }
+
+    /// <summary>A built-in report's page while its result is being worked out.</summary>
+    private Control Working(string title, string description, string text) => Page(title, description, null, null,
+        new StackPanel
+        {
+            Spacing = 10,
+            Margin = new Thickness(0, 30, 0, 0),
+            Children =
+            {
+                new TextBlock { Text = text, FontSize = 16 },
+                new ProgressBar { IsIndeterminate = true, Width = 280, HorizontalAlignment = HorizontalAlignment.Left },
+                Ui.Muted("The window stays usable while this runs."),
+            },
+        });
 
     // ---- Layout helpers -----------------------------------------------------------
 

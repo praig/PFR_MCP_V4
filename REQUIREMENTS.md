@@ -1,6 +1,6 @@
 # PFR_MCP_V4 — Requirements
 
-Status: **Draft v0.12** — updated 2026-10-29. Items marked **[PENDING]** are open decisions (see [Open decisions](#15-open-decisions)).
+Status: **Draft v0.13** — updated 2026-10-29. Items marked **[PENDING]** are open decisions (see [Open decisions](#15-open-decisions)).
 Items marked **✅** are implemented.
 
 ---
@@ -135,6 +135,7 @@ Scope is **NIOS (on-prem grids)**. External network sources (Forward Networks, N
 - Status bar with load results and errors.
 - A backup can also be opened from the command line: `PFR <backup file>`.
 - Backups are parsed off the UI thread; opening another backup replaces the current one.
+- **The window never waits for slow work ✅.** Anything that takes noticeable time runs on a background thread, and the window keeps responding (it can be moved, resized, switched between tabs) while it does. That covers parsing or importing a backup; **building the tables** of a grid (a row per record, done in the background, with a "Preparing…" page, and each section's grid control made only when the section is first opened); saving, opening and deleting snapshots, grids and clients (serialising, compressing, encrypting and writing the files); running a query or report **and turning its rows (up to 100,000) into table rows**; working out the CNAME report (its result is kept while the same grid is open, so changing a filter only rebuilds the rows); writing an export; unlocking (the key derivation is deliberately slow); and WAPI, ping, DNS and SSH calls. While work runs, the status bar says what it is and shows a moving **busy bar** (`BeginBusy`); the buttons that would start it again are off. If another grid is opened or another report chosen while one is still being prepared, the older result is dropped and never replaces the newer one. **Rule for new code:** nothing that reads or writes a file, parses, queries, or loops over a grid's records runs on the UI thread; build the table *definitions* (plain data) in the background and make the controls on the UI thread. **Not moved yet** (small, judged not worth it): listing clients, and saving contacts, notes, logins and connections.
 - Errors while loading are shown in the status bar and never close the app; the previously loaded grid stays on screen.
 - **Dark theme** with charcoal surfaces (not pure black).
 

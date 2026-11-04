@@ -73,6 +73,7 @@ public class ReportsViewTests
         await window.LoadBackupAsync(BackupPath());
         window.ShowModule(AppModule.Reports);
         window.Reports.SelectReport(ReportsView.DanglingCnames);
+        await window.Reports.ReportTask; // the report is worked out in the background
         Snapshot(window, "42-reports-cnames");
 
         var result = window.Reports.CnameResult!;
@@ -80,9 +81,12 @@ public class ReportsViewTests
         Assert.Equal(result.Rows.Count(r => r.Outcome != CnameOutcome.Resolves), shown);
 
         window.Reports.SetCnameFilters(showResolving: true, showNotVerified: true);
+        await window.Reports.ReportTask;
         Assert.Equal(result.Rows.Count, window.Reports.CurrentTable!.VisibleRowCount);
+        Assert.Same(result, window.Reports.CnameResult); // the same grid's result is kept, not worked out again
 
         window.Reports.SetCnameFilters(showResolving: false, showNotVerified: false);
+        await window.Reports.ReportTask;
         Assert.Equal(
             result.Rows.Count(r => r.Outcome is not (CnameOutcome.Resolves or CnameOutcome.External or CnameOutcome.Delegated)
                                    || (r.Outcome != CnameOutcome.Resolves && r.TakeoverProvider is not null)),

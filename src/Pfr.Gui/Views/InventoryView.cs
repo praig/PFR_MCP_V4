@@ -173,14 +173,17 @@ public sealed class InventoryView : UserControl
     /// background thread, then the sections appear. If another grid is shown (or the view is emptied) in the meantime,
     /// this one is dropped.
     /// </summary>
-    public async Task ShowInventoryAsync(GridInventory inventory)
+    /// <param name="inventory">The grid to show.</param>
+    /// <param name="prepare">How to build its tables (<see cref="Prepare"/> by default); a test can make it slow.</param>
+    public async Task ShowInventoryAsync(GridInventory inventory, Func<GridInventory, PreparedInventory>? prepare = null)
     {
+        prepare ??= Prepare;
         var version = ++_showVersion;
         IsPreparing = true;
         Content = Preparing(inventory);
         try
         {
-            var prepared = await Task.Run(() => Prepare(inventory));
+            var prepared = await Task.Run(() => prepare(inventory));
             if (version != _showVersion) return;
             Show(prepared);
         }

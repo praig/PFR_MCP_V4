@@ -106,10 +106,21 @@ public sealed class ClientDetailView : UserControl
             }
         };
 
-        var delete = Ui.Confirming("Delete client…", () =>
+        var delete = Ui.Confirming("Delete client…", async () =>
         {
-            _workspace.DeleteClient(Client.Id);
-            _host.SetStatus($"Deleted client {Client.Name} and all of its data.");
+            var clientId = Client.Id;
+            var clientName = Client.Name;
+            using var busy = _host.BeginBusy($"Deleting {clientName}\u2026");
+            try
+            {
+                await Task.Run(() => _workspace.DeleteClient(clientId)); // every snapshot is a file; this can take a while
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Ui.ShowError(message, $"Could not delete {clientName}: {ex.Message}");
+                return;
+            }
+            _host.SetStatus($"Deleted client {clientName} and all of its data.");
             ClientDeleted?.Invoke(this, EventArgs.Empty);
         }, "Click again to delete client and all its data");
 
@@ -307,9 +318,9 @@ public sealed class ClientDetailView : UserControl
         };
 
         var addCurrent = new Button { Content = "Add grid open in Inventory" };
-        addCurrent.Click += (_, _) =>
+        addCurrent.Click += async (_, _) =>
         {
-            AddCurrentGrid(label.Text ?? "");
+            await AddCurrentGridAsync(label.Text ?? "");
             label.Text = "";
         };
 
@@ -357,10 +368,20 @@ public sealed class ClientDetailView : UserControl
             }
         };
 
-        var deleteGrid = Ui.Confirming("Delete grid", () =>
+        var deleteGrid = Ui.Confirming("Delete grid", async () =>
         {
             if (SelectedGrid is not { } g) return;
-            _workspace.DeleteGrid(Client.Id, g.Id);
+            var clientId = Client.Id;
+            using var busy = _host.BeginBusy($"Deleting {g.Name}\u2026");
+            try
+            {
+                await Task.Run(() => _workspace.DeleteGrid(clientId, g.Id));
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Ui.ShowError(_gridMessage, $"Could not delete {g.Name}: {ex.Message}");
+                return;
+            }
             Reload();
             Ui.ShowInfo(_gridMessage, $"Deleted grid {g.Name} and its snapshots.");
         }, "Click again to delete grid and all its snapshots");
@@ -370,10 +391,20 @@ public sealed class ClientDetailView : UserControl
         openSnapshot.Click += async (_, _) => await OpenSelectedSnapshotAsync();
         _snapshotList.DoubleTapped += async (_, _) => await OpenSelectedSnapshotAsync();
 
-        var deleteSnapshot = Ui.Confirming("Delete snapshot", () =>
+        var deleteSnapshot = Ui.Confirming("Delete snapshot", async () =>
         {
             if (SelectedGrid is not { } g || _snapshotList.SelectedItem is not SnapshotInfo s) return;
-            _workspace.DeleteSnapshot(Client.Id, g.Id, s.Id);
+            var clientId = Client.Id;
+            using var busy = _host.BeginBusy("Deleting the snapshot\u2026");
+            try
+            {
+                await Task.Run(() => _workspace.DeleteSnapshot(clientId, g.Id, s.Id));
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Ui.ShowError(_gridMessage, $"Could not delete the snapshot: {ex.Message}");
+                return;
+            }
             Reload(g.Id);
             Ui.ShowInfo(_gridMessage, "Snapshot deleted.");
         });
@@ -530,6 +561,7 @@ public sealed class ClientDetailView : UserControl
     {
         var name = Path.GetFileName(path);
         Ui.ShowInfo(_gridMessage, $"Reading {name}…");
+        using var busy = _host.BeginBusy($"Importing {name}\u2026");
         try
         {
             var sha = await Task.Run(() => ClientWorkspace.Sha256Of(path));
@@ -549,7 +581,10 @@ public sealed class ClientDetailView : UserControl
         }
     }
 
-    /// <summary>Saves the grid currently open in Inventory as a snapshot (no re-parse).</summary>
+    /// <summary>
+    /// Saves the grid currently open in Inventory as a snapshot (no re-parse). This writes on the calling thread; the
+    /// button uses <see cref="AddCurrentGridAsync"/>, which does not hold up the window.
+    /// </summary>
     public void AddCurrentGrid(string label = "")
     {
         if (_host.LoadedInventory is not { } inventory || _host.LoadedSource is not { } source)
@@ -568,6 +603,39 @@ public sealed class ClientDetailView : UserControl
                 : $"Saved {source.FileName} to grid {grid.Name}. Note: the same file was already saved on {duplicate.Value.Snapshot.ImportedUtc.ToLocalTime():yyyy-MM-dd}.");
         }
         catch (Exception ex) when (ex is InvalidDataException or ArgumentException)
+        {
+            Ui.ShowError(_gridMessage, ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Saves the grid currently open in Inventory as a snapshot without holding up the window: it is serialised,
+    /// compressed, encrypted and written in the background.
+    /// </summary>
+    public async Task AddCurrentGridAsync(string label = "")
+    {
+        if (_host.LoadedInventory is not { } inventory || _host.LoadedSource is not { } source)
+        {
+            Ui.ShowError(_gridMessage, "No grid is open in Inventory. Open a backup there first, or use Import backup.");
+            return;
+        }
+
+        using var busy = _host.BeginBusy($"Saving {source.FileName}\u2026");
+        try
+        {
+            var duplicate = _workspace.FindDuplicate(Client.Id, source.Sha256);
+            var clientId = Client.Id;
+            var (grid, info) = await Task.Run(() => _workspace.AddSnapshot(clientId, inventory, source.FileName, source.Bytes, source.Sha256, label: label));
+            Reload(grid.Id);
+
+            // Only if it is still the grid on screen: the same tables are kept, so nothing is rebuilt.
+            if (ReferenceEquals(_host.LoadedInventory, inventory))
+                await _host.ShowSnapshotAsync(Client, grid, info, inventory, switchToInventory: false);
+            Ui.ShowInfo(_gridMessage, duplicate is null
+                ? $"Saved {source.FileName} to grid {grid.Name}."
+                : $"Saved {source.FileName} to grid {grid.Name}. Note: the same file was already saved on {duplicate.Value.Snapshot.ImportedUtc.ToLocalTime():yyyy-MM-dd}.");
+        }
+        catch (Exception ex) when (ex is InvalidDataException or ArgumentException or IOException)
         {
             Ui.ShowError(_gridMessage, ex.Message);
         }
@@ -599,8 +667,9 @@ public sealed class ClientDetailView : UserControl
         }
         try
         {
+            using var busy = _host.BeginBusy("Opening the snapshot\u2026");
             var inventory = await Task.Run(() => _workspace.LoadSnapshot(Client.Id, grid.Id, s.Id));
-            _host.ShowSnapshot(Client, grid, s, inventory, switchToInventory: true);
+            await _host.ShowSnapshotAsync(Client, grid, s, inventory, switchToInventory: true);
         }
         catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException
                                        or System.Security.Cryptography.CryptographicException)
