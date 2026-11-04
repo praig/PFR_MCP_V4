@@ -702,14 +702,15 @@ public static partial class Program
     }
 
     /// <summary>Runs a read-only SQL query against a snapshot and prints the result as a table, CSV or JSON.</summary>
-    private static int RunQuery(Args cli) => RunQuery(cli, null);
+    private static int RunQuery(Args cli) => RunQuery(cli, null, null);
 
     /// <summary>
     /// Runs the SQL given as the one argument and prints the result. <paramref name="definitions"/> are a report
     /// template's parameters (their defaults apply); null for a query typed on the command line, where every
     /// :name in the SQL is text taken from --param name=value, or NULL if not given.
     /// </summary>
-    private static int RunQuery(Args cli, IReadOnlyList<ReportParameter>? definitions)
+    /// <param name="title">The report's name, used to name the sheet when the output is an Excel workbook.</param>
+    private static int RunQuery(Args cli, IReadOnlyList<ReportParameter>? definitions, string? title)
     {
         if (cli.Positional.Count != 1)
         {
@@ -736,8 +737,8 @@ public static partial class Program
 
         if (cli.Value("--out") is { } outPath)
         {
-            var format = ResultExport.Write(result, outPath, spreadsheetSafe: cli.Has("--excel-safe"));
-            Console.Error.WriteLine($"Wrote {result.Rows.Count:N0} row{(result.Rows.Count == 1 ? "" : "s")} to {Path.GetFullPath(outPath)} as {format}.");
+            var format = ResultExport.Write(result, outPath, spreadsheetSafe: cli.Has("--excel-safe"), title: title ?? "Query results");
+            Console.Error.WriteLine($"Wrote {result.Rows.Count:N0} row{(result.Rows.Count == 1 ? "" : "s")} to {Path.GetFullPath(outPath)} as {ResultExport.Describe(format)}.");
             if (result.Truncated) Console.Error.WriteLine($"Note: only the first {limit:N0} rows were returned; use --limit for more.");
             return 0;
         }
@@ -888,7 +889,7 @@ public static partial class Program
         var template = FindTemplate(OpenTemplates(cli), name);
         cli.Positional.Clear();
         cli.Positional.Add(template.Sql);
-        return RunQuery(cli, template.Parameters);
+        return RunQuery(cli, template.Parameters, template.Name);
     }
 
     private static int DeleteReport(Args cli)
@@ -1018,8 +1019,8 @@ public static partial class Program
         Console.WriteLine("  report-run --name <n> (--client <n> --grid <n> | --file <backup>) [--limit <rows>] [--csv | --json]");
         Console.WriteLine("  report-delete --name <n>                     Delete a template");
         Console.WriteLine();
-        Console.WriteLine("Query options (query, report-run): --param name=value for each :name in the SQL (repeat it), --out file.csv|file.json,");
-        Console.WriteLine("  --excel-safe (so a spreadsheet can't run a cell as a formula), --limit rows, --csv, --json");
+        Console.WriteLine("Query options (query, report-run): --param name=value for each :name in the SQL (repeat it), --out file.xlsx|file.csv|file.json,");
+        Console.WriteLine("  --excel-safe (so a spreadsheet can't run a cell as a formula; not needed for .xlsx), --limit rows, --csv, --json");
         Console.WriteLine();
         Console.WriteLine("Options:");
         Console.WriteLine($"  --data <folder>   Client data folder (default: {DataLocation.FolderName} next to pfr, or ${DataLocation.EnvironmentVariable})");
