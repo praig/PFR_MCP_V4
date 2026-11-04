@@ -69,14 +69,48 @@ public sealed class FilterableTable : UserControl
         var toolbar = new StackPanel { Orientation = Orientation.Horizontal, Children = { search, _count } };
         DockPanel.SetDock(toolbar, Dock.Top);
 
+        _grid.SelectionChanged += (_, _) => RaiseSelectionChanged();
+
         Content = new DockPanel { Margin = new Thickness(12), Children = { toolbar, _grid } };
         ApplyFilter(null);
     }
 
     public string Title => _table.Title;
 
+    /// <summary>Raised when the selected row changes.</summary>
+    public event EventHandler? SelectionChanged;
+
+    /// <summary>The selected row (the first, if several are selected), or null.</summary>
+    public TableRow? SelectedRow => _grid.SelectedItem as TableRow ?? _lastSelected;
+
+    /// <summary>Selects a row (used by tests and by code that jumps to one).</summary>
+    public void Select(TableRow? row)
+    {
+        _grid.SelectedItem = row;
+
+        // The grid normally reports the change itself; make sure listeners hear of it even if it has not yet been laid out.
+        if (!ReferenceEquals(_lastSelected, row))
+        {
+            _lastSelected = row;
+            SelectionChanged?.Invoke(this, EventArgs.Empty);
+        }
+    }
+
+    private TableRow? _lastSelected;
+
+    private void RaiseSelectionChanged()
+    {
+        _lastSelected = _grid.SelectedItem as TableRow;
+        SelectionChanged?.Invoke(this, EventArgs.Empty);
+    }
+
     /// <summary>Rows currently shown (after filtering).</summary>
     public int VisibleRowCount { get; private set; }
+
+    /// <summary>The rows currently shown, in the order they were given (not the order the user has sorted them into).</summary>
+    public IReadOnlyList<TableRow> VisibleRows => _visible;
+
+    private IReadOnlyList<TableRow> _visible = [];
 
     public void ApplyFilter(string? text)
     {
@@ -85,6 +119,7 @@ public sealed class FilterableTable : UserControl
 
         var rows = terms.Length == 0 ? _table.Rows : _table.Rows.Where(r => r.Matches(terms)).ToList();
         _grid.ItemsSource = rows;
+        _visible = rows;
         VisibleRowCount = rows.Count;
         _count.Text = terms.Length == 0
             ? $"{_table.Rows.Count:N0} rows"

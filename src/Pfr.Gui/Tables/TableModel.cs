@@ -28,6 +28,9 @@ public sealed class TableRow
 
     public string SearchText { get; }
 
+    /// <summary>What the row stands for (set by the code that builds the table, for the code that reacts to a selection).</summary>
+    public object? Tag { get; init; }
+
     public bool Matches(string[] terms) => terms.All(t => SearchText.Contains(t, StringComparison.Ordinal));
 }
 

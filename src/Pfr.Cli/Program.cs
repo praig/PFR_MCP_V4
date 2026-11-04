@@ -47,6 +47,7 @@ public static partial class Program
                 "grids" => ListGrids(cli),
                 "show" => Show(cli),
                 "ipam" => RunIpam(cli),
+                "ipam-findings" => RunIpamFindings(cli),
                 "ping" => RunPing(cli),
                 "dig" => RunDig(cli),
                 "ssh-run" => RunSsh(cli),
@@ -967,6 +968,10 @@ public static partial class Program
         Console.WriteLine("                                               The client's address plan across all its grids' latest snapshots:");
         Console.WriteLine("                                               networks by prefix, which grids each is present in, and the DHCP ranges");
         Console.WriteLine("                                               and hosts inside (--records adds A / AAAA / PTR records, which can be many)");
+        Console.WriteLine("  ipam-findings --client <name> [--grid <name>] [--kind <id>,...] [--warnings] [--items <n>] [--json] | --list-kinds");
+        Console.WriteLine("                                               What the address plan shows that is worth a look: networks on some grids but");
+        Console.WriteLine("                                               not others, the same prefix in several views, networks inside networks, objects in");
+        Console.WriteLine("                                               no network, clashing host addresses, A records without PTRs. Exit code 1 if any warning");
         Console.WriteLine();
         Console.WriteLine("Grid connections (WAPI address and accounts, stored encrypted with the client):");
         Console.WriteLine("  connection-set --client <n> --grid <n> [--address <host>] [--port <n>] [--wapi-version <v>]");
@@ -1027,7 +1032,7 @@ public static partial class Program
     private sealed class Args
     {
         private static readonly HashSet<string> Flags = ["--json", "--reveal", "--password", "--api-key", "--schema", "--csv", "--excel-safe", "--no-ranges", "--no-hosts", "--records",
-            "--tcp", "--dnssec", "--short", "--cd", "--no-recurse", "--reverse", "--compare", "--members", "--no-nodes", "--ipv6", "--allow-changes"];
+            "--tcp", "--dnssec", "--short", "--cd", "--no-recurse", "--reverse", "--compare", "--members", "--no-nodes", "--ipv6", "--allow-changes", "--warnings", "--list-kinds"];
         private readonly Dictionary<string, string> _values = new(StringComparer.Ordinal);
         private readonly HashSet<string> _flags = new(StringComparer.Ordinal);
         private readonly Dictionary<string, List<string>> _all = new(StringComparer.Ordinal);
