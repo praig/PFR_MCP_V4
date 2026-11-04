@@ -28,4 +28,20 @@ public static class ResultExportDialog
         });
         return file?.TryGetLocalPath();
     }
+
+    /// <summary>For a report that only makes sense as a workbook: asks for an .xlsx file name. Null if cancelled.</summary>
+    public static async Task<string?> AskWorkbookAsync(Control owner, string suggestedName)
+    {
+        var top = TopLevel.GetTopLevel(owner);
+        if (top is null) return null;
+
+        var file = await top.StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+        {
+            Title = "Create Excel workbook",
+            SuggestedFileName = suggestedName,
+            DefaultExtension = "xlsx",
+            FileTypeChoices = [Excel],
+        });
+        return file?.TryGetLocalPath();
+    }
 }

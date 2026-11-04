@@ -108,7 +108,7 @@ public class XlsxWriterTests
         Assert.Equal("A much longer column heading".Length + 2, widths[2]);
 
         var styles = Part(file, "xl/styles.xml");
-        Assert.Equal(4, styles.Descendants(Main + "cellXfs").Single().Elements().Count());
+        Assert.Equal(5, styles.Descendants(Main + "cellXfs").Single().Elements().Count()); // plain, header, wrapped, bold, link
     }
 
     [Fact]

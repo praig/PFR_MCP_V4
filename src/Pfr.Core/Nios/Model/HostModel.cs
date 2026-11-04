@@ -28,6 +28,12 @@ public sealed class HostObject
     public bool Disabled { get; set; }
     public string? Comment { get; set; }
 
+    /// <summary>When the host object was created (UTC); null when the backup has no creation time for it.</summary>
+    public DateTimeOffset? Created { get; set; }
+
+    /// <summary>The host's extensible attributes by name (an attribute it inherits is included, with the value that applies); null when it has none.</summary>
+    public Dictionary<string, string>? ExtensibleAttributes { get; set; }
+
     /// <summary>For a DNS host, its own TTL or the one it inherits from its zone; no seconds for an IPAM-only host.</summary>
     public Ttl Ttl { get; set; } = new(null, TtlSource.Grid);
 

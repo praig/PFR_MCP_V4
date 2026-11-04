@@ -6,20 +6,30 @@ using System.Xml;
 
 namespace Pfr.Core.Query;
 
+/// <summary>A cell that jumps to another sheet when clicked.</summary>
+/// <param name="Row">The row of the sheet's data (0 is the first row below the header).</param>
+/// <param name="Column">The column (0 is A).</param>
+/// <param name="Sheet">The name of the sheet it opens, at A1.</param>
+public sealed record XlsxLink(int Row, int Column, string Sheet);
+
+/// <summary>One sheet of a workbook: its name, its header and rows, and the cells that link to other sheets.</summary>
+public sealed record XlsxSheet(string Name, QueryResult Data, IReadOnlyList<XlsxLink>? Links = null);
+
 /// <summary>
-/// Writes a query result as an Excel workbook (.xlsx), so it can be sent to a client as it is. Nothing is installed or
+/// Writes query results as an Excel workbook (.xlsx), so it can be sent to a client as it is. Nothing is installed or
 /// referenced for this: an .xlsx file is a zip of a few XML parts, and writing them directly keeps the application free of
 /// a spreadsheet library.
 /// <list type="bullet">
-/// <item>The first sheet holds the data: a bold, shaded header row that stays in view while scrolling, a filter on every
-/// column, and column widths that fit the content. Numbers are numbers; everything else is text.</item>
+/// <item>Each sheet has a bold, shaded header row that stays in view while scrolling, a filter on every column, and column
+/// widths that fit the content. Numbers are numbers; everything else is text.</item>
 /// <item>Text is always stored as text, never as a formula, so a value such as <c>=cmd|...</c> that came from a DNS record
 /// or a comment cannot run when the file is opened.</item>
 /// <item>Anything Excel cannot hold is handled openly, not silently: rows past its limit, cells over 32,767 characters,
 /// control characters, and whole numbers of more than 15 digits (which Excel would round) are dealt with and listed on an
 /// "About" sheet, which is added only when there is something to say.</item>
+/// <item>A workbook of several sheets can have cells that link to other sheets (a contents page, say).</item>
 /// </list>
-/// The result is streamed to the zip one row at a time, so a result of a million rows does not need a million cells in
+/// Each sheet is streamed to the zip one row at a time, so a result of a million rows does not need a million cells in
 /// memory beyond the result itself.
 /// </summary>
 public static class XlsxWriter
@@ -43,39 +53,106 @@ public static class XlsxWriter
     private const int StyleHeader = 1;
     private const int StyleWrap = 2;
     private const int StyleBold = 3;
+    private const int StyleLink = 4;
 
+    private const string AboutSheetName = "About";
     private const string Main = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
     private const string Relationships = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
     private const string Declaration = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n";
 
-    /// <summary>Writes the workbook to <paramref name="output"/>, which is left open.</summary>
+    /// <summary>Writes one result as a workbook with a single data sheet. <paramref name="output"/> is left open.</summary>
     /// <param name="output">Where to write (a file or memory).</param>
     /// <param name="result">What to write.</param>
     /// <param name="title">The name of the data sheet (made safe for Excel: 31 characters, none of []:*?/\).</param>
     /// <param name="exportedAt">The time shown on the About sheet (now by default).</param>
     /// <returns>What had to be left out or changed, in words (empty when nothing was). The same is on the About sheet.</returns>
     /// <exception cref="ArgumentException">The result has more columns than a worksheet can hold.</exception>
-    public static IReadOnlyList<string> Write(Stream output, QueryResult result, string? title = null, DateTimeOffset? exportedAt = null)
-    {
-        var columns = result.Columns.Count;
-        if (columns > MaxColumns)
-            throw new ArgumentException($"An Excel sheet holds at most {MaxColumns:N0} columns; this result has {columns:N0}.");
+    public static IReadOnlyList<string> Write(Stream output, QueryResult result, string? title = null, DateTimeOffset? exportedAt = null) =>
+        WriteSheets(output, [new XlsxSheet(SheetName(title), result)], title, exportedAt, single: true);
 
-        var rowCount = Math.Min(result.Rows.Count, MaxRows - 1);
-        var scan = Scan(result, rowCount);
-        var notes = NotesFor(result, rowCount, scan);
-        var sheetName = SheetName(title);
+    /// <summary>
+    /// Writes a workbook of several sheets, in the order given, with the cells that link from one to another. Sheet names
+    /// have to be ones Excel accepts and be different from each other (see <see cref="UniqueSheetNames"/>).
+    /// </summary>
+    /// <param name="output">Where to write. It is left open.</param>
+    /// <param name="sheets">The sheets; the first is the one shown when the file is opened.</param>
+    /// <param name="title">Named on the About sheet, which is added only if something had to be cut or changed.</param>
+    /// <param name="exportedAt">The time shown on the About sheet (now by default).</param>
+    /// <returns>What had to be left out or changed, in words, each beginning with the sheet it was on.</returns>
+    /// <exception cref="ArgumentException">No sheets, a name Excel would not accept or that is used twice, a link to a sheet
+    /// that is not there, or a sheet with more columns than a worksheet can hold.</exception>
+    public static IReadOnlyList<string> WriteWorkbook(
+        Stream output, IReadOnlyList<XlsxSheet> sheets, string? title = null, DateTimeOffset? exportedAt = null)
+    {
+        if (sheets.Count == 0) throw new ArgumentException("A workbook needs at least one sheet.");
+
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var sheet in sheets)
+        {
+            if (sheet.Name != SheetName(sheet.Name) || sheet.Name.Equals(AboutSheetName, StringComparison.OrdinalIgnoreCase))
+                throw new ArgumentException($"\"{sheet.Name}\" is not a sheet name Excel accepts (or is reserved).");
+            if (!names.Add(sheet.Name)) throw new ArgumentException($"There are two sheets called \"{sheet.Name}\".");
+        }
+        foreach (var link in sheets.SelectMany(s => s.Links ?? []))
+        {
+            if (!names.Contains(link.Sheet)) throw new ArgumentException($"A link points at \"{link.Sheet}\", which is not a sheet of this workbook.");
+        }
+
+        return WriteSheets(output, sheets, title, exportedAt, single: false);
+    }
+
+    private static IReadOnlyList<string> WriteSheets(
+        Stream output, IReadOnlyList<XlsxSheet> sheets, string? title, DateTimeOffset? exportedAt, bool single)
+    {
+        foreach (var sheet in sheets)
+        {
+            if (sheet.Data.Columns.Count > MaxColumns)
+                throw new ArgumentException($"An Excel sheet holds at most {MaxColumns:N0} columns; this result has {sheet.Data.Columns.Count:N0}.");
+        }
+
+        var rowCounts = sheets.Select(s => Math.Min(s.Data.Rows.Count, MaxRows - 1)).ToArray();
+        var scans = sheets.Select((s, i) => Scan(s.Data, rowCounts[i])).ToArray();
+
+        var notes = new List<string>();
+        for (var i = 0; i < sheets.Count; i++)
+        {
+            foreach (var note in NotesFor(sheets[i].Data, rowCounts[i], scans[i]))
+                notes.Add(single ? note : $"{sheets[i].Name}: {note}");
+        }
         var hasAbout = notes.Count > 0;
 
         using var zip = new ZipArchive(output, ZipArchiveMode.Create, leaveOpen: true);
-        AddPart(zip, "[Content_Types].xml", ContentTypes(hasAbout));
+        AddPart(zip, "[Content_Types].xml", ContentTypes(sheets.Count, hasAbout));
         AddPart(zip, "_rels/.rels", RootRelationships);
-        AddPart(zip, "xl/workbook.xml", Workbook(sheetName, columns, rowCount, hasAbout));
-        AddPart(zip, "xl/_rels/workbook.xml.rels", WorkbookRelationships(hasAbout));
+        AddPart(zip, "xl/workbook.xml", Workbook(sheets, rowCounts, hasAbout));
+        AddPart(zip, "xl/_rels/workbook.xml.rels", WorkbookRelationships(sheets.Count, hasAbout));
         AddPart(zip, "xl/styles.xml", Styles);
-        AddXml(zip, "xl/worksheets/sheet1.xml", w => WriteDataSheet(w, result, rowCount, scan.Widths));
+
+        for (var i = 0; i < sheets.Count; i++)
+        {
+            var index = i;
+            var links = new Dictionary<(int Row, int Column), string>();
+            foreach (var link in sheets[i].Links ?? []) links[(link.Row, link.Column)] = link.Sheet;
+            AddXml(zip, $"xl/worksheets/sheet{i + 1}.xml",
+                w => WriteDataSheet(w, sheets[index].Data, rowCounts[index], scans[index].Widths, links, tabSelected: index == 0));
+        }
+
         if (hasAbout)
-            AddXml(zip, "xl/worksheets/sheet2.xml", w => WriteAboutSheet(w, sheetName, title, rowCount, notes, exportedAt ?? DateTimeOffset.Now));
+        {
+            var facts = new List<(string Label, string Value)>();
+            if (!string.IsNullOrWhiteSpace(title)) facts.Add(("Report", title.Trim()));
+            if (single)
+            {
+                facts.Add(("Data sheet", sheets[0].Name));
+            }
+            else
+            {
+                facts.Add(("Sheets", sheets.Count.ToString("N0", CultureInfo.InvariantCulture)));
+            }
+            facts.Add(("Rows exported", rowCounts.Sum(c => (long)c).ToString("N0", CultureInfo.InvariantCulture)));
+            facts.Add(("Exported", (exportedAt ?? DateTimeOffset.Now).ToString("yyyy-MM-dd HH:mm zzz", CultureInfo.InvariantCulture)));
+            AddXml(zip, $"xl/worksheets/sheet{sheets.Count + 1}.xml", w => WriteAboutSheet(w, facts, notes));
+        }
         return notes;
     }
 
@@ -90,7 +167,38 @@ public static class XlsxWriter
 
         // "History" is reserved by Excel, and "About" is the name of the notes sheet.
         if (name.Length == 0 || name.Equals("History", StringComparison.OrdinalIgnoreCase)) return "Results";
-        return name.Equals("About", StringComparison.OrdinalIgnoreCase) ? "About (data)" : name;
+        return name.Equals(AboutSheetName, StringComparison.OrdinalIgnoreCase) ? "About (data)" : name;
+    }
+
+    /// <summary>
+    /// Sheet names for a list of wanted names, in the same order: each made safe for Excel (see <see cref="SheetName"/>), and
+    /// any that would repeat an earlier one (Excel ignores case) or one of the <paramref name="reserved"/> names given a
+    /// "~2", "~3"... on the end, with the name cut so it still fits in 31 characters.
+    /// </summary>
+    public static List<string> UniqueSheetNames(IEnumerable<string> wanted, IEnumerable<string>? reserved = null)
+    {
+        var used = new HashSet<string>(reserved ?? [], StringComparer.OrdinalIgnoreCase) { AboutSheetName };
+        var names = new List<string>();
+
+        foreach (var want in wanted)
+        {
+            var name = SheetName(want);
+            if (!used.Add(name))
+            {
+                for (var number = 2; ; number++)
+                {
+                    var suffix = $"~{number}";
+                    var candidate = name.Length + suffix.Length > MaxSheetNameLength
+                        ? name[..(MaxSheetNameLength - suffix.Length)].TrimEnd(' ', '\'') + suffix
+                        : name + suffix;
+                    if (!used.Add(candidate)) continue;
+                    name = candidate;
+                    break;
+                }
+            }
+            names.Add(name);
+        }
+        return names;
     }
 
     /// <summary>The letters of a column: 0 is A, 25 is Z, 26 is AA.</summary>
@@ -260,52 +368,70 @@ public static class XlsxWriter
         "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/>" +
         "</Relationships>";
 
-    private static string ContentTypes(bool hasAbout) =>
-        "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">" +
-        "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>" +
-        "<Default Extension=\"xml\" ContentType=\"application/xml\"/>" +
-        "<Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/>" +
-        "<Override PartName=\"/xl/worksheets/sheet1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>" +
-        (hasAbout ? "<Override PartName=\"/xl/worksheets/sheet2.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>" : "") +
-        "<Override PartName=\"/xl/styles.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml\"/>" +
-        "</Types>";
+    private const string WorksheetContentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml";
 
-    private static string Workbook(string sheetName, int columns, int rowCount, bool hasAbout)
+    private static string ContentTypes(int sheetCount, bool hasAbout)
     {
-        var sheets = $"<sheet name=\"{Esc(sheetName)}\" sheetId=\"1\" r:id=\"rId1\"/>" +
-                     (hasAbout ? "<sheet name=\"About\" sheetId=\"2\" r:id=\"rId2\"/>" : "");
-
-        // Excel records the filtered range as a hidden name; it opens the file without it, but this is what it writes itself.
-        var filter = columns == 0
-            ? ""
-            : "<definedNames><definedName name=\"_xlnm._FilterDatabase\" localSheetId=\"0\" hidden=\"1\">" +
-              Esc($"'{sheetName.Replace("'", "''")}'!$A$1:${ColumnName(columns - 1)}${rowCount + 1}") +
-              "</definedName></definedNames>";
-
-        return $"<workbook xmlns=\"{Main}\" xmlns:r=\"{Relationships}\"><sheets>{sheets}</sheets>{filter}</workbook>";
+        var text = new StringBuilder(
+            "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">" +
+            "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>" +
+            "<Default Extension=\"xml\" ContentType=\"application/xml\"/>" +
+            "<Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/>");
+        for (var i = 1; i <= sheetCount + (hasAbout ? 1 : 0); i++)
+            text.Append($"<Override PartName=\"/xl/worksheets/sheet{i}.xml\" ContentType=\"{WorksheetContentType}\"/>");
+        text.Append("<Override PartName=\"/xl/styles.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml\"/></Types>");
+        return text.ToString();
     }
 
-    private static string WorkbookRelationships(bool hasAbout) =>
-        "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">" +
-        "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet1.xml\"/>" +
-        (hasAbout ? "<Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet2.xml\"/>" : "") +
-        "<Relationship Id=\"rId3\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/>" +
-        "</Relationships>";
+    private static string Workbook(IReadOnlyList<XlsxSheet> sheets, int[] rowCounts, bool hasAbout)
+    {
+        var listed = new StringBuilder();
+        for (var i = 0; i < sheets.Count; i++)
+            listed.Append($"<sheet name=\"{Esc(sheets[i].Name)}\" sheetId=\"{i + 1}\" r:id=\"rId{i + 1}\"/>");
+        if (hasAbout) listed.Append($"<sheet name=\"{AboutSheetName}\" sheetId=\"{sheets.Count + 1}\" r:id=\"rId{sheets.Count + 1}\"/>");
 
-    /// <summary>Four looks: 0 plain, 1 header (bold, pale blue, a line under it), 2 wrapped text, 3 bold.</summary>
+        // Excel records each filtered range as a hidden name; it opens the file without them, but this is what it writes itself.
+        var names = new StringBuilder();
+        for (var i = 0; i < sheets.Count; i++)
+        {
+            var columns = sheets[i].Data.Columns.Count;
+            if (columns == 0) continue;
+            names.Append($"<definedName name=\"_xlnm._FilterDatabase\" localSheetId=\"{i}\" hidden=\"1\">")
+                .Append(Esc($"'{sheets[i].Name.Replace("'", "''")}'!$A$1:${ColumnName(columns - 1)}${rowCounts[i] + 1}"))
+                .Append("</definedName>");
+        }
+        var defined = names.Length == 0 ? "" : $"<definedNames>{names}</definedNames>";
+
+        return $"<workbook xmlns=\"{Main}\" xmlns:r=\"{Relationships}\"><sheets>{listed}</sheets>{defined}</workbook>";
+    }
+
+    private static string WorkbookRelationships(int sheetCount, bool hasAbout)
+    {
+        var text = new StringBuilder("<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">");
+        for (var i = 1; i <= sheetCount + (hasAbout ? 1 : 0); i++)
+            text.Append($"<Relationship Id=\"rId{i}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet{i}.xml\"/>");
+
+        // The styles come after the sheets (after the About sheet's place too, which is reserved whether or not it is there).
+        text.Append($"<Relationship Id=\"rId{sheetCount + 2}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/>");
+        return text.Append("</Relationships>").ToString();
+    }
+
+    /// <summary>Five looks: 0 plain, 1 header (bold, pale blue, a line under it), 2 wrapped text, 3 bold, 4 a link (blue, underlined).</summary>
     private static readonly string Styles =
         $"<styleSheet xmlns=\"{Main}\">" +
-        "<fonts count=\"2\"><font><sz val=\"11\"/><name val=\"Calibri\"/><family val=\"2\"/></font><font><b/><sz val=\"11\"/><name val=\"Calibri\"/><family val=\"2\"/></font></fonts>" +
+        "<fonts count=\"3\"><font><sz val=\"11\"/><name val=\"Calibri\"/><family val=\"2\"/></font><font><b/><sz val=\"11\"/><name val=\"Calibri\"/><family val=\"2\"/></font>" +
+        "<font><u/><sz val=\"11\"/><color rgb=\"FF0563C1\"/><name val=\"Calibri\"/><family val=\"2\"/></font></fonts>" +
         "<fills count=\"3\"><fill><patternFill patternType=\"none\"/></fill><fill><patternFill patternType=\"gray125\"/></fill>" +
         "<fill><patternFill patternType=\"solid\"><fgColor rgb=\"FFDDEBF7\"/><bgColor indexed=\"64\"/></patternFill></fill></fills>" +
         "<borders count=\"2\"><border><left/><right/><top/><bottom/><diagonal/></border>" +
         "<border><left/><right/><top/><bottom style=\"thin\"><color auto=\"1\"/></bottom><diagonal/></border></borders>" +
         "<cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs>" +
-        "<cellXfs count=\"4\">" +
+        "<cellXfs count=\"5\">" +
         "<xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\"/>" +
         "<xf numFmtId=\"0\" fontId=\"1\" fillId=\"2\" borderId=\"1\" xfId=\"0\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment vertical=\"top\"/></xf>" +
         "<xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyAlignment=\"1\"><alignment vertical=\"top\" wrapText=\"1\"/></xf>" +
         "<xf numFmtId=\"0\" fontId=\"1\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyFont=\"1\" applyAlignment=\"1\"><alignment vertical=\"top\"/></xf>" +
+        "<xf numFmtId=\"0\" fontId=\"2\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyFont=\"1\"/>" +
         "</cellXfs>" +
         "<cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles>" +
         "<dxfs count=\"0\"/><tableStyles count=\"0\" defaultTableStyle=\"TableStyleMedium9\" defaultPivotStyle=\"PivotStyleLight16\"/>" +
@@ -313,12 +439,15 @@ public static class XlsxWriter
 
     private static string Esc(string text) => SecurityElement.Escape(text) ?? "";
 
-    // ---- The data sheet ----
+    // ---- A data sheet ----
 
-    private static void WriteDataSheet(XmlWriter w, QueryResult result, int rowCount, double[] widths)
+    private static void WriteDataSheet(
+        XmlWriter w, QueryResult result, int rowCount, double[] widths,
+        Dictionary<(int Row, int Column), string> links, bool tabSelected)
     {
         var columns = result.Columns.Count;
         var last = columns == 0 ? "A1" : $"{ColumnName(columns - 1)}{rowCount + 1}";
+        var names = Enumerable.Range(0, columns).Select(ColumnName).ToArray();
 
         w.WriteStartElement("worksheet", Main);
         w.WriteAttributeString("xmlns", "r", null, Relationships);
@@ -327,7 +456,7 @@ public static class XlsxWriter
 
         w.WriteStartElement("sheetViews", Main);
         w.WriteStartElement("sheetView", Main);
-        w.WriteAttributeString("tabSelected", "1");
+        if (tabSelected) w.WriteAttributeString("tabSelected", "1");
         w.WriteAttributeString("workbookViewId", "0");
         if (columns > 0)
         {
@@ -355,8 +484,6 @@ public static class XlsxWriter
         w.WriteStartElement("sheetData", Main);
         if (columns > 0)
         {
-            var names = Enumerable.Range(0, columns).Select(ColumnName).ToArray();
-
             w.WriteStartElement("row", Main);
             w.WriteAttributeString("r", "1");
             for (var c = 0; c < columns; c++) WriteText(w, names[c] + "1", Clean(result.Columns[c]), StyleHeader);
@@ -369,13 +496,39 @@ public static class XlsxWriter
 
                 w.WriteStartElement("row", Main);
                 w.WriteAttributeString("r", number);
-                for (var c = 0; c < columns && c < row.Length; c++) WriteCell(w, names[c] + number, row[c]);
+                for (var c = 0; c < columns && c < row.Length; c++)
+                {
+                    if (links.Count > 0 && links.ContainsKey((r, c)) && row[c] is { } linked)
+                    {
+                        var text = Clean(QueryResult.Format(linked));
+                        if (text.Length > 0) WriteText(w, names[c] + number, text, StyleLink);
+                    }
+                    else
+                    {
+                        WriteCell(w, names[c] + number, row[c]);
+                    }
+                }
                 w.WriteEndElement();
             }
         }
         w.WriteEndElement(); // sheetData
 
         if (columns > 0) Empty(w, "autoFilter", ("ref", $"A1:{last}"));
+
+        // A click on a linked cell goes to the top of the other sheet. (Links inside the workbook need no relationship.)
+        var shown = links.Where(l => l.Key.Row >= 0 && l.Key.Row < rowCount && l.Key.Column >= 0 && l.Key.Column < columns)
+            .OrderBy(l => l.Key.Row).ThenBy(l => l.Key.Column).ToList();
+        if (shown.Count > 0)
+        {
+            w.WriteStartElement("hyperlinks", Main);
+            foreach (var (cell, target) in shown)
+            {
+                Empty(w, "hyperlink",
+                    ("ref", names[cell.Column] + (cell.Row + 2).ToString(CultureInfo.InvariantCulture)),
+                    ("location", $"'{target.Replace("'", "''")}'!A1"));
+            }
+            w.WriteEndElement();
+        }
 
         Empty(w, "pageMargins", ("left", "0.7"), ("right", "0.7"), ("top", "0.75"), ("bottom", "0.75"), ("header", "0.3"), ("footer", "0.3"));
         w.WriteEndElement(); // worksheet
@@ -432,13 +585,10 @@ public static class XlsxWriter
 
     // ---- The About sheet ----
 
-    private static void WriteAboutSheet(XmlWriter w, string sheetName, string? title, int rowCount, IReadOnlyList<string> notes, DateTimeOffset exportedAt)
+    private static void WriteAboutSheet(XmlWriter w, IReadOnlyList<(string Label, string Value)> facts, IReadOnlyList<string> notes)
     {
         var rows = new List<(string Label, string Value, int Style)>();
-        if (!string.IsNullOrWhiteSpace(title)) rows.Add(("Report", title.Trim(), 0));
-        rows.Add(("Data sheet", sheetName, 0));
-        rows.Add(("Rows exported", rowCount.ToString("N0", CultureInfo.InvariantCulture), 0));
-        rows.Add(("Exported", exportedAt.ToString("yyyy-MM-dd HH:mm zzz", CultureInfo.InvariantCulture), 0));
+        rows.AddRange(facts.Select(f => (f.Label, f.Value, 0)));
         rows.AddRange(notes.Select(n => ("Note", n, StyleWrap)));
 
         w.WriteStartElement("worksheet", Main);

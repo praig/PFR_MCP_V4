@@ -34,6 +34,9 @@ public static class BackupParser
         "dns.network_container",
         "dns.dhcp_range",
         "dns.dhcp_failover_association",
+        "dns.option",
+        "dns.option_definition",
+        "dns.cluster_dhcp_properties",
         "dns.bind_a",
         "dns.bind_aaaa",
         "dns.bind_cname",
@@ -48,6 +51,7 @@ public static class BackupParser
         "dns.bind_caa",
         "dns.bind_soa",
         "dns.cluster_dns_properties",
+        "one.extensible_attributes_value",
     ];
 
     /// <summary>Zone types shown to users; internal types (View, Dummy, SharedRecordGroup…) are skipped.</summary>
@@ -85,6 +89,18 @@ public static class BackupParser
         var byType = AllowedTypes.ToDictionary(t => t, _ => new List<OneDbObject>());
         foreach (var obj in reader.Read(oneDbXml))
         {
+            // DHCP options hang off fixed addresses, networks and members as well as ranges, and a big grid has very many
+            // of them; only the ones a range can inherit (set on the range, its network, a container or the grid) are kept.
+            if (obj.Type == "dns.option" && !IsInheritableOption(obj))
+            {
+                continue;
+            }
+            // Extensible attribute values are set on networks, zones, fixed addresses and much else; only those on A records and
+            // host objects are used, so only those are kept.
+            if (obj.Type == "one.extensible_attributes_value" && !IsRecordAttribute(obj))
+            {
+                continue;
+            }
             byType[obj.Type].Add(obj);
         }
 
@@ -100,8 +116,10 @@ public static class BackupParser
         AddZones(inv, byType);
         AddNetworks(inv, byType);
         AddDhcp(inv, byType);
-        AddRecords(inv, byType);
-        AddHosts(inv, byType);
+        var attributes = AttributesByObject(byType);
+        AddRecords(inv, byType, attributes);
+        AddHosts(inv, byType, attributes);
+        inv.RecordDetailsRead = true;
         LicenseParser.Apply(inv, byType);
         MemberServices.Apply(inv, byType);
         AdminParser.Apply(inv, byType);
@@ -287,6 +305,7 @@ public static class BackupParser
             IsContainer = container,
             Disabled = o.GetBool("disabled"),
             Comment = NullIfEmpty(o.Get("comment")),
+            ParentKey = ContainerKeyOf(o.GetOrEmpty("parent")),
         });
 
         foreach (var o in byType["dns.network_container"]) Add(o, container: true);
@@ -325,12 +344,17 @@ public static class BackupParser
             return c != 0 ? c : IpSort.Compare(a.MsServerAddress, b.MsServerAddress);
         });
 
+        var leaseSettings = LeaseSettings(byType);
+        var gridLease = byType["dns.cluster_dhcp_properties"].FirstOrDefault()?.GetInt("lease_time");
+        var built = new List<(OneDbObject Object, DhcpRange Range)>();
+
         foreach (var o in byType["dns.dhcp_range"])
         {
             var assoc = o.GetOrEmpty("server_association_type");
             var start = o.GetOrEmpty("start_address");
             var network = o.GetOrEmpty("network");
-            inv.DhcpRanges.Add(new DhcpRange
+            var (lease, leaseSource) = EffectiveLease(o, leaseSettings, gridLease);
+            var range = new DhcpRange
             {
                 NetworkKey = network,
                 StartAddress = start,
@@ -344,14 +368,187 @@ public static class BackupParser
                 Disabled = o.GetBool("disabled"),
                 Name = NullIfEmpty(o.Get("name")),
                 Comment = NullIfEmpty(o.Get("comment")),
-            });
+                AddressType = NullIfEmpty(o.Get("address_type")) ?? "ADDRESS",
+                PrefixStart = NullIfEmpty(o.Get("v6_start_prefix")),
+                PrefixEnd = NullIfEmpty(o.Get("v6_end_prefix")),
+                PrefixBits = o.GetInt("v6_prefix_bits"),
+                LeaseTimeSeconds = lease,
+                LeaseTimeSource = leaseSource,
+                LeaseTimeOverridden = o.GetBool("override_lease_time"),
+            };
+            inv.DhcpRanges.Add(range);
+            built.Add((o, range));
         }
+
+        AttachRangeOptions(inv, byType, built);
+        inv.DhcpOptionsRead = true;
 
         inv.DhcpRanges.Sort((a, b) =>
         {
             var c = a.NetworkViewId.CompareTo(b.NetworkViewId);
             return c != 0 ? c : IpSort.Compare(a.StartAddress, b.StartAddress);
         });
+    }
+
+    // ---- DHCP lease times and options ------------------------------------------------
+
+    private const string RangeParentPrefix = ".com.infoblox.dns.dhcp_range$";
+    private const string ContainerParentPrefix = ".com.infoblox.dns.network_container$";
+    private const string NetworkParentPrefix = ".com.infoblox.dns.network$";
+    private const string GridParentPrefix = ".com.infoblox.dns.cluster_dhcp_properties$";
+
+    /// <summary>An option a range can inherit: set on a range, a network, a network container or the grid's DHCP properties.</summary>
+    private static bool IsInheritableOption(OneDbObject option)
+    {
+        var parent = option.GetOrEmpty("parent");
+        return parent.StartsWith(RangeParentPrefix, StringComparison.Ordinal)
+            || parent.StartsWith(NetworkParentPrefix, StringComparison.Ordinal)
+            || parent.StartsWith(ContainerParentPrefix, StringComparison.Ordinal)
+            || parent.StartsWith(GridParentPrefix, StringComparison.Ordinal);
+    }
+
+    /// <summary>The key of the container a network's "parent" names ("...network_container$10.0.0.0/8/0"), or null when it is a network view.</summary>
+    private static string? ContainerKeyOf(string parent) =>
+        parent.StartsWith(ContainerParentPrefix, StringComparison.Ordinal) ? parent[ContainerParentPrefix.Length..] : null;
+
+    /// <summary>What a network or container says about lease time, and which container it sits in.</summary>
+    private readonly record struct LeaseSetting(bool Overrides, int? Seconds, string? ParentKey, bool IsContainer);
+
+    /// <summary>Every network and container by key (address/cidr/view, as ranges name them).</summary>
+    private static Dictionary<string, LeaseSetting> LeaseSettings(Dictionary<string, List<OneDbObject>> byType)
+    {
+        var settings = new Dictionary<string, LeaseSetting>(StringComparer.Ordinal);
+        foreach (var (type, container) in new[] { ("dns.network", false), ("dns.network_container", true) })
+        {
+            foreach (var o in byType[type])
+            {
+                var key = $"{o.GetOrEmpty("address")}/{o.GetInt("cidr") ?? 0}/{o.GetInt("network_view") ?? 0}";
+                var parent = o.GetOrEmpty("parent");
+                settings[key] = new LeaseSetting(
+                    o.GetBool("override_lease_time"), o.GetInt("lease_time"),
+                    parent.StartsWith(ContainerParentPrefix, StringComparison.Ordinal) ? parent[ContainerParentPrefix.Length..] : null,
+                    container);
+            }
+        }
+        return settings;
+    }
+
+    /// <summary>
+    /// The lease time a range really has. A range that sets its own uses it. Otherwise it takes the nearest setting above it:
+    /// its network, then each network container up the tree, then the grid. The value a range stores when it doesn't override
+    /// is ignored: it can be left over from before the network changed.
+    /// </summary>
+    private static (int? Seconds, string? Source) EffectiveLease(
+        OneDbObject range, Dictionary<string, LeaseSetting> settings, int? gridLease)
+    {
+        var own = range.GetInt("lease_time");
+        if (range.GetBool("override_lease_time")) return (own, "Range");
+
+        var key = NullIfEmpty(range.Get("network"));
+        for (var depth = 0; key is not null && depth < 64 && settings.TryGetValue(key, out var setting); depth++)
+        {
+            if (setting.Overrides && setting.Seconds is not null)
+                return (setting.Seconds, setting.IsContainer ? "Network container" : "Network");
+            key = setting.ParentKey;
+        }
+
+        return gridLease is not null ? (gridLease, "Grid") : (own, own is null ? null : "Backup");
+    }
+
+    /// <summary>
+    /// Puts each option set on a range on that range. An option names its range by start and end address, then (when several
+    /// ranges share those, as with the same range on two Microsoft servers or in two network views) by member, failover
+    /// association, network view and Microsoft server, where the option gives them. Options that can't be placed are counted
+    /// in <see cref="GridInventory.UnmatchedRangeOptions"/>, not guessed at.
+    /// </summary>
+    private static void AttachRangeOptions(
+        GridInventory inv, Dictionary<string, List<OneDbObject>> byType, List<(OneDbObject Object, DhcpRange Range)> built)
+    {
+        var definitions = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var d in byType["dns.option_definition"])
+            definitions.TryAdd($"{d.GetOrEmpty("space")}.{d.GetOrEmpty("code")}", d.GetOrEmpty("name"));
+
+        var byAddresses = new Dictionary<(string Start, string End), List<(OneDbObject Object, DhcpRange Range)>>();
+        void Index(string start, string end, (OneDbObject Object, DhcpRange Range) entry)
+        {
+            if (start.Length == 0 && end.Length == 0) return;
+            if (!byAddresses.TryGetValue((start, end), out var list)) byAddresses[(start, end)] = list = [];
+            list.Add(entry);
+        }
+        foreach (var entry in built)
+        {
+            Index(entry.Range.StartAddress, entry.Range.EndAddress, entry);
+            Index(entry.Range.PrefixStart ?? "", entry.Range.PrefixEnd ?? "", entry);
+        }
+
+        var networks = new Dictionary<(bool Container, string Key), IpNetwork>();
+        foreach (var n in inv.Networks) networks.TryAdd((n.IsContainer, n.Key), n);
+
+        foreach (var option in byType["dns.option"])
+        {
+            var reference = option.GetOrEmpty("option_definition"); // e.g. "DHCP Standard Options.12.false.150": the number is the last part
+            var dot = reference.LastIndexOf('.');
+            var parent = option.GetOrEmpty("parent");
+
+            // Where it was set: a range, a network, a container above it, or the grid.
+            List<DhcpOption>? list = null;
+            if (parent.StartsWith(RangeParentPrefix, StringComparison.Ordinal))
+                list = RangeNamedBy(parent[RangeParentPrefix.Length..], byAddresses)?.Options;
+            else if (parent.StartsWith(NetworkParentPrefix, StringComparison.Ordinal))
+                list = networks.GetValueOrDefault((false, parent[NetworkParentPrefix.Length..]))?.Options;
+            else if (parent.StartsWith(ContainerParentPrefix, StringComparison.Ordinal))
+                list = networks.GetValueOrDefault((true, parent[ContainerParentPrefix.Length..]))?.Options;
+            else if (parent.StartsWith(GridParentPrefix, StringComparison.Ordinal))
+                list = inv.GridDhcpOptions;
+
+            if (list is null
+                || dot < 0
+                || !int.TryParse(reference[(dot + 1)..], System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var code))
+            {
+                inv.UnmatchedRangeOptions++;
+                continue;
+            }
+
+            list.Add(new DhcpOption
+            {
+                Code = code,
+                Name = definitions.TryGetValue(reference, out var name) ? NullIfEmpty(name) : null,
+                Space = reference[..dot],
+                Value = option.GetOrEmpty("value"),
+                IsIpv4 = option.Get("is_ipv4") != "false",
+            });
+        }
+
+        static void ByNumber(List<DhcpOption> options)
+        {
+            if (options.Count > 1)
+                options.Sort((a, b) => a.Code != b.Code ? a.Code.CompareTo(b.Code) : string.CompareOrdinal(a.Value, b.Value));
+        }
+        foreach (var (_, range) in built) ByNumber(range.Options);
+        foreach (var network in inv.Networks) ByNumber(network.Options);
+        ByNumber(inv.GridDhcpOptions);
+    }
+
+    private static DhcpRange? RangeNamedBy(
+        string key, Dictionary<(string Start, string End), List<(OneDbObject Object, DhcpRange Range)>> byAddresses)
+    {
+        var parts = key.Split('/');
+        if (parts.Length < 2 || !byAddresses.TryGetValue((parts[0], parts[1]), out var candidates)) return null;
+        if (candidates.Count == 1) return candidates[0].Range;
+
+        // Several ranges with these addresses: the rest of the key (member, failover, network view, Microsoft server) says which.
+        // A part the key leaves empty, or gives as ".", says nothing.
+        string Part(int i) => parts.Length > i ? parts[i] : "";
+        static bool Agrees(string fromKey, string? fromRange) =>
+            fromKey.Length == 0 || fromKey == "." || fromRange is null || fromKey == fromRange;
+
+        foreach (var (o, range) in candidates)
+        {
+            if (Agrees(Part(2), o.Get("member")) && Agrees(Part(3), o.Get("failover_association"))
+                && Agrees(Part(4), o.Get("network_view")) && Agrees(Part(5), o.Get("ms_server")))
+                return range;
+        }
+        return null;
     }
 
     private static bool IsMsServer(string? msServer) => msServer is not (null or "" or ".");
@@ -365,12 +562,13 @@ public static class BackupParser
         return name.Length == 0 ? null : name;
     }
 
-    private static void AddRecords(GridInventory inv, Dictionary<string, List<OneDbObject>> byType)
+    private static void AddRecords(GridInventory inv, Dictionary<string, List<OneDbObject>> byType,
+        Dictionary<string, Dictionary<string, string>> attributes)
     {
         var zones = inv.Zones.ToDictionary(z => z.Key, StringComparer.Ordinal);
 
         void AddRecord(string zoneKey, string name, DnsRecordType type, string value, bool disabled,
-            string? hostName = null, Ttl? ttl = null)
+            string? hostName = null, Ttl? ttl = null, RecordOrigin? origin = null, Dictionary<string, string>? extensible = null)
         {
             if (!zones.TryGetValue(zoneKey, out var zone)) return; // e.g. RPZ/blacklist internals, non-DNS hosts
             inv.Records.Add(new DnsRecord
@@ -384,16 +582,24 @@ public static class BackupParser
                 Disabled = disabled,
                 HostName = hostName,
                 Ttl = ttl ?? zone.DefaultTtl, // no TTL of its own: inherit the zone's
+                Creator = origin?.Creator,
+                LastQueried = origin?.LastQueried,
+                Comment = origin?.Comment,
+                Created = origin?.Created,
+                ExtensibleAttributes = extensible,
             });
         }
 
-        void Add(OneDbObject o, DnsRecordType type, string value) =>
+        void Add(OneDbObject o, DnsRecordType type, string value, string? attributesKey = null) =>
             AddRecord(o.GetOrEmpty("zone"), o.GetOrEmpty("name"), type, value, o.GetBool("disabled"),
-                ttl: OwnTtl(o, TtlSource.Record));
+                ttl: OwnTtl(o, TtlSource.Record), origin: OriginOf(o),
+                extensible: attributesKey is not null && attributes.TryGetValue(attributesKey, out var found) ? found : null);
 
         string Quote(string? s) => $"\"{s ?? ""}\"";
 
-        foreach (var o in byType["dns.bind_a"]) Add(o, DnsRecordType.A, o.GetOrEmpty("address"));
+        foreach (var o in byType["dns.bind_a"])
+            Add(o, DnsRecordType.A, o.GetOrEmpty("address"),
+                attributesKey: $"{BindAPrefix}{o.GetOrEmpty("zone")},{o.GetOrEmpty("name")},{o.GetOrEmpty("address")}");
         foreach (var o in byType["dns.bind_aaaa"]) Add(o, DnsRecordType.AAAA, o.GetOrEmpty("address"));
         foreach (var o in byType["dns.bind_cname"]) Add(o, DnsRecordType.CNAME, o.GetOrEmpty("canonical_name"));
         foreach (var o in byType["dns.bind_ptr"]) Add(o, DnsRecordType.PTR, o.GetOrEmpty("dname"));
@@ -423,7 +629,8 @@ public static class BackupParser
             }
         }
 
-        AddHostRecords(inv, byType, zones, (zk, n, t, v, d, h, ttl) => AddRecord(zk, n, t, v, d, h, ttl));
+        AddHostRecords(inv, byType, zones, (zk, n, t, v, d, h, ttl, origin) => AddRecord(zk, n, t, v, d, h, ttl, origin));
+        inv.RecordOriginsRead = true;
 
         inv.Records.Sort((a, b) =>
         {
@@ -441,7 +648,8 @@ public static class BackupParser
     /// (under a <c>non_DNS_host_root</c>) generates no DNS records, so this is the only place it is recorded. The network
     /// view of a host comes from its zone's DNS view, or from the root that holds it: host addresses carry none.
     /// </summary>
-    private static void AddHosts(GridInventory inv, Dictionary<string, List<OneDbObject>> byType)
+    private static void AddHosts(GridInventory inv, Dictionary<string, List<OneDbObject>> byType,
+        Dictionary<string, Dictionary<string, string>> attributes)
     {
         var zones = inv.Zones.ToDictionary(z => z.Key, StringComparer.Ordinal);
 
@@ -467,6 +675,8 @@ public static class BackupParser
                 IsDns = isDns,
                 Disabled = h.GetBool("disabled"),
                 Comment = NullIfEmpty(h.Get("comment")),
+                Created = CreatedOf(h),
+                ExtensibleAttributes = HostAttributes(attributes, h, zoneKey, hostName),
                 Ttl = isDns ? OwnTtl(h, TtlSource.Host) ?? zone!.DefaultTtl : new Ttl(null, TtlSource.Grid),
             };
             inv.Hosts.Add(host);
@@ -522,9 +732,9 @@ public static class BackupParser
         GridInventory inv,
         Dictionary<string, List<OneDbObject>> byType,
         Dictionary<string, DnsZone> zones,
-        Action<string, string, DnsRecordType, string, bool, string?, Ttl?> addRecord)
+        Action<string, string, DnsRecordType, string, bool, string?, Ttl?, RecordOrigin?> addRecord)
     {
-        var hosts = new Dictionary<string, (string Fqdn, bool Disabled, Ttl? Ttl)>(StringComparer.Ordinal);
+        var hosts = new Dictionary<string, (string Fqdn, bool Disabled, Ttl? Ttl, RecordOrigin Origin)>(StringComparer.Ordinal);
         var addressesByHost = byType["dns.host_address"].ToLookup(a => a.GetOrEmpty("host"), StringComparer.Ordinal);
         foreach (var h in byType["dns.host"])
         {
@@ -534,13 +744,14 @@ public static class BackupParser
             var fqdn = name.Length == 0 ? zone.Fqdn : $"{name}.{zone.Fqdn}";
             // A host may set its own TTL; its records use it, otherwise they inherit their zone's.
             var hostTtl = OwnTtl(h, TtlSource.Host);
-            hosts[$"{zoneKey}.{name}"] = (fqdn, h.GetBool("disabled"), hostTtl);
+            var origin = OriginOf(h); // its records are created by whoever created the host, and queried when it is
+            hosts[$"{zoneKey}.{name}"] = (fqdn, h.GetBool("disabled"), hostTtl, origin);
 
             foreach (var a in addressesByHost[$"{zoneKey}.{name}"])
             {
                 var address = a.GetOrEmpty("address");
                 var isV4 = a.Get("is_ipv4") is not "false";
-                addRecord(zoneKey, name, isV4 ? DnsRecordType.A : DnsRecordType.AAAA, address, h.GetBool("disabled"), fqdn, hostTtl);
+                addRecord(zoneKey, name, isV4 ? DnsRecordType.A : DnsRecordType.AAAA, address, h.GetBool("disabled"), fqdn, hostTtl, origin);
 
                 // PTR in the reverse zone NIOS links the address to, if the grid hosts it.
                 if (a.Get("reverse_zone") is { Length: > 0 } reverseKey
@@ -548,7 +759,7 @@ public static class BackupParser
                     && ReverseName(address) is { } reverse
                     && RelativeTo(reverse, reverseZone.Fqdn) is { } ptrName)
                 {
-                    addRecord(reverseKey, ptrName, DnsRecordType.PTR, fqdn, h.GetBool("disabled"), fqdn, hostTtl);
+                    addRecord(reverseKey, ptrName, DnsRecordType.PTR, fqdn, h.GetBool("disabled"), fqdn, hostTtl, origin);
                 }
             }
         }
@@ -558,9 +769,73 @@ public static class BackupParser
         {
             if (!hosts.TryGetValue(alias.GetOrEmpty("host"), out var host)) continue;
             addRecord(alias.GetOrEmpty("zone"), alias.GetOrEmpty("alias"), DnsRecordType.CNAME,
-                host.Fqdn, host.Disabled, host.Fqdn, host.Ttl);
+                host.Fqdn, host.Disabled, host.Fqdn, host.Ttl, host.Origin);
         }
     }
+
+    /// <summary>Who made a record, when it was last queried, its comment and when it was created: what the scavenging and creation reports need.</summary>
+    private sealed record RecordOrigin(string? Creator, DateTimeOffset? LastQueried, string? Comment, DateTimeOffset? Created);
+
+    private static RecordOrigin OriginOf(OneDbObject o) => new(
+        NullIfEmpty(o.Get("creator")), UnixTime(o.Get("last_queried")), NullIfEmpty(o.Get("comment")), CreatedOf(o));
+
+    /// <summary>When an object was created: its creation_timestamp, or the created_timestamp some objects carry instead.</summary>
+    private static DateTimeOffset? CreatedOf(OneDbObject o) => UnixTime(o.Get("creation_timestamp")) ?? UnixTime(o.Get("created_timestamp"));
+
+    // ---- Extensible attributes of A records and hosts ----
+
+    private const string BindAPrefix = ".com.infoblox.dns.bind_a$";
+    private const string HostPrefix = ".com.infoblox.dns.host$";
+
+    /// <summary>An extensible attribute value set on an A record or a host object (the only ones kept).</summary>
+    private static bool IsRecordAttribute(OneDbObject value)
+    {
+        var target = value.GetOrEmpty("object");
+        return target.StartsWith(BindAPrefix, StringComparison.Ordinal) || target.StartsWith(HostPrefix, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The extensible attributes of each object by the object's reference ("...bind_a$zone,name,address" or "...host$zone.name"),
+    /// each as name → value. The tag is the attribute's name with a leading dot; a value inherited from a network is on the object
+    /// itself, with the value that applies, so it is included. An attribute with no value is skipped.
+    /// </summary>
+    private static Dictionary<string, Dictionary<string, string>> AttributesByObject(Dictionary<string, List<OneDbObject>> byType)
+    {
+        var result = new Dictionary<string, Dictionary<string, string>>(StringComparer.Ordinal);
+        foreach (var v in byType["one.extensible_attributes_value"])
+        {
+            var tag = v.GetOrEmpty("tag");
+            var name = tag.StartsWith('.') ? tag[1..] : tag;
+            var value = v.GetOrEmpty("value");
+            if (name.Length == 0 || value.Length == 0) continue;
+
+            var target = v.GetOrEmpty("object");
+            if (!result.TryGetValue(target, out var set)) result[target] = set = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            set[name] = value;
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// A host's attributes, found by the reference NIOS uses for it: "...host$zone.name" or, for a host created with a timestamp (as
+    /// the IPAM-only ones are in a real backup), "...host$zone.creator.timestamp.name". Null when it has none.
+    /// </summary>
+    private static Dictionary<string, string>? HostAttributes(
+        Dictionary<string, Dictionary<string, string>> attributes, OneDbObject host, string zoneKey, string name)
+    {
+        if (attributes.TryGetValue($"{HostPrefix}{zoneKey}.{name}", out var plain)) return plain;
+        return host.Get("created_timestamp") is { Length: > 0 } created
+            && attributes.TryGetValue($"{HostPrefix}{zoneKey}.{host.Get("creator_member") ?? "0"}.{created}.{name}", out var stamped)
+                ? stamped
+                : null;
+    }
+
+    /// <summary>A time in seconds since 1970 (UTC), or null when it is absent, zero or not a time.</summary>
+    private static DateTimeOffset? UnixTime(string? seconds) =>
+        long.TryParse(seconds, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var value)
+        && value > 0 && value < 253_402_300_799
+            ? DateTimeOffset.FromUnixTimeSeconds(value)
+            : null;
 
     /// <summary>
     /// The object's own TTL, or null when it inherits. ttl_option 1 means "set here";

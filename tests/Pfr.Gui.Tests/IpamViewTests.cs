@@ -84,7 +84,8 @@ public class IpamViewTests
 
         var headers = window.FindControl<TabControl>("ModuleTabs")!.Items.OfType<TabItem>().Select(t => (string)t.Header!);
 
-        Assert.Equal("Clients,Inventory,IPAM,Network tools,Reports", string.Join(",", headers));
+        // The working modules are in this order; placeholders for later integrations follow them (see PlaceholderTabsTests).
+        Assert.Equal("Clients,Inventory,IPAM,Network tools,Reports", string.Join(",", headers.Take(5)));
     }
 
     [AvaloniaFact]

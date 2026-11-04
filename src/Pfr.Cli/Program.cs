@@ -48,6 +48,10 @@ public static partial class Program
                 "show" => Show(cli),
                 "ipam" => RunIpam(cli),
                 "ipam-findings" => RunIpamFindings(cli),
+                "row-count" => RunRowCount(cli),
+                "dhcp-range-report" => RunDhcpRangeReport(cli),
+                "scavenge-report" => RunScavengeReport(cli),
+                "record-creation-report" => RunRecordCreationReport(cli),
                 "ping" => RunPing(cli),
                 "dig" => RunDig(cli),
                 "ssh-run" => RunSsh(cli),
@@ -973,6 +977,15 @@ public static partial class Program
         Console.WriteLine("                                               What the address plan shows that is worth a look: networks on some grids but");
         Console.WriteLine("                                               not others, the same prefix in several views, networks inside networks, objects in");
         Console.WriteLine("                                               no network, clashing host addresses, A records without PTRs. Exit code 1 if any warning");
+        Console.WriteLine("  row-count (<backup> | --client <n> --grid <n>) --out <file.xlsx> [--no-reverse] [--no-empty]");
+        Console.WriteLine("                                               Excel workbook: a Home sheet with each zone's record count, linking to a sheet per");
+        Console.WriteLine("                                               zone (named view.zone) that lists its records");
+        Console.WriteLine("  dhcp-range-report (<backup> | --client <n> --grid <n>) --out <file.xlsx> [--only-with-options] [--no-ipv6] [--no-inherited]");
+        Console.WriteLine("                                               Every DHCP range with its lease time and one line per option that applies to it (set on it or inherited)");
+        Console.WriteLine("  scavenge-report (<backup> | --client <n> --grid <n>) --out <file.xlsx> [--creator DYNAMIC,STATIC,SYSTEM] [--type A,CNAME,PTR]");
+        Console.WriteLine("                                               Each A, CNAME and PTR record with its creator, FQDN, IP address, last-queried date and type");
+        Console.WriteLine("  record-creation-report (<backup> | --client <n> --grid <n>) --out <file.xlsx> [--attribute <name>] [--no-a] [--no-hosts] [--include-ipam-only]");
+        Console.WriteLine("                                               Each A record and host with its FQDN, IP address, comment, creation date and an extensible attribute (Mnemonic)");
         Console.WriteLine();
         Console.WriteLine("Grid connections (WAPI address and accounts, stored encrypted with the client):");
         Console.WriteLine("  connection-set --client <n> --grid <n> [--address <host>] [--port <n>] [--wapi-version <v>]");
@@ -1033,7 +1046,7 @@ public static partial class Program
     private sealed class Args
     {
         private static readonly HashSet<string> Flags = ["--json", "--reveal", "--password", "--api-key", "--schema", "--csv", "--excel-safe", "--no-ranges", "--no-hosts", "--records",
-            "--tcp", "--dnssec", "--short", "--cd", "--no-recurse", "--reverse", "--compare", "--members", "--no-nodes", "--ipv6", "--allow-changes", "--warnings", "--list-kinds"];
+            "--tcp", "--dnssec", "--short", "--cd", "--no-recurse", "--reverse", "--compare", "--members", "--no-nodes", "--ipv6", "--allow-changes", "--warnings", "--list-kinds", "--no-reverse", "--no-empty", "--only-with-options", "--no-ipv6", "--no-inherited", "--no-a", "--include-ipam-only"];
         private readonly Dictionary<string, string> _values = new(StringComparer.Ordinal);
         private readonly HashSet<string> _flags = new(StringComparer.Ordinal);
         private readonly Dictionary<string, List<string>> _all = new(StringComparer.Ordinal);

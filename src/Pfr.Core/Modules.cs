@@ -20,6 +20,15 @@ public enum AppModule
 
     /// <summary>Predefined reports (health checks, CNAME resolution…) and a data explorer (REQUIREMENTS §12).</summary>
     Reports,
+
+    /// <summary>Placeholder: a future Cloudflare integration. Nothing is planned in detail yet.</summary>
+    Cloudflare,
+
+    /// <summary>Placeholder: a future Forward Networks connector (REQUIREMENTS §13.5, §14).</summary>
+    ForwardNetworks,
+
+    /// <summary>Placeholder: a future Splunk integration. Nothing is planned in detail yet.</summary>
+    Splunk,
 }
 
 public static class ModuleCatalog
@@ -36,5 +45,13 @@ public static class ModuleCatalog
             "Ping, DNS lookups (dig), and SSH command capture on appliances. SNMP and an interactive SSH console come later."),
         (AppModule.Reports, "Reports",
             "Predefined reports (health checks, CNAME resolution, licenses…), a data explorer and remediation change sets."),
+
+        // Placeholders: tabs with no page yet, so the places are reserved. Each shows its summary and "Coming in a later version."
+        (AppModule.Cloudflare, "Cloudflare",
+            "Reserved for a future Cloudflare integration. What it will do has not been decided yet."),
+        (AppModule.ForwardNetworks, "Forward Networks",
+            "Reserved for a future Forward Networks connector. Until then its networks and devices are meant to come into IPAM through an import."),
+        (AppModule.Splunk, "Splunk",
+            "Reserved for a future Splunk integration. What it will do has not been decided yet."),
     ];
 }
