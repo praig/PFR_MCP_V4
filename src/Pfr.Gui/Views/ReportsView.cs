@@ -57,6 +57,11 @@ public sealed class ReportsView : UserControl
     private int _renderVersion;
     private (GridInventory Inventory, DanglingCnameResult Result)? _cnameCache;
 
+    // What the Export button of the built-in report on screen would write, and where it says how that went.
+    private TableDefinition? _exportable;
+    private string _exportTitle = "";
+    private TextBlock? _exportStatus;
+
     public ReportsView(ReportTemplateStore templates)
     {
         _templates = templates;
@@ -272,6 +277,8 @@ public sealed class ReportsView : UserControl
     {
         _renderVersion++; // a report still being worked out for something else is no longer wanted
         ReportTask = Task.CompletedTask;
+        _exportable = null;
+        _exportStatus = null;
         CurrentTable = null;
         LicenseResult = null;
         CnameResult = null;
@@ -349,7 +356,7 @@ public sealed class ReportsView : UserControl
             _ => "Permanent",
         };
 
-        var table = CurrentTable = new FilterableTable(new TableDefinition(
+        var definition = new TableDefinition(
             "license expiry",
             [
                 new("Status", ColumnKind.Status, 110), new("Scope", Width: 200), new("License", Width: 260),
@@ -361,9 +368,10 @@ public sealed class ReportsView : UserControl
                 State(r.State), r.Scope, r.License, r.Code, r.Node,
                 r.Expires is { } e ? e.ToString("yyyy-MM-dd") : "Permanent",
                 r.DaysLeft?.ToString() ?? "", r.Note,
-            ])).ToList()));
+            ])).ToList());
+        var table = CurrentTable = new FilterableTable(definition);
 
-        return Page(LicenseExpiry, LicenseExpiryReport.Description, options,
+        return Page(LicenseExpiry, LicenseExpiryReport.Description, WithExport(options, definition, LicenseExpiry),
             new StackPanel { Spacing = 4, Children = { summary, Ui.Muted(next) } }, table);
     }
 
@@ -439,8 +447,65 @@ public sealed class ReportsView : UserControl
 
         var table = CurrentTable = new FilterableTable(definition);
 
-        return Page(DanglingCnames, DanglingCnameReport.Description, options,
+        return Page(DanglingCnames, DanglingCnameReport.Description, WithExport(options, definition, DanglingCnames),
             new StackPanel { Spacing = 4, Children = { summary, scope } }, table);
+    }
+
+    // ---- Exporting a built-in report ------------------------------------------------
+
+    /// <summary>True when the built-in report on screen has something to export.</summary>
+    public bool CanExport => _exportable is not null;
+
+    /// <summary>What the Export button last said (where the file went, or why it didn't).</summary>
+    public string ExportStatusText => _exportStatus?.Text ?? "";
+
+    /// <summary>The options of a report page, with an Export button and its message under them.</summary>
+    private Control WithExport(Control options, TableDefinition definition, string title)
+    {
+        _exportable = definition;
+        _exportTitle = title;
+
+        var button = new Button { Content = "Export\u2026" };
+        var status = _exportStatus = new TextBlock { Opacity = 0.8, VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap };
+        button.Click += async (_, _) => await ExportAsync();
+
+        return new StackPanel { Spacing = 6, Children = { options, Ui.Row(button, status) } };
+    }
+
+    /// <summary>Asks where to save what the report on screen shows (as Excel, CSV or JSON) and writes it.</summary>
+    public async Task<bool> ExportAsync()
+    {
+        if (_exportable is null) return false;
+        var path = await ResultExportDialog.AskAsync(this, ReportTemplateStore.Slug(_exportTitle));
+        return path is not null && await ExportToFileAsync(path);
+    }
+
+    /// <summary>
+    /// Writes what the report on screen shows (with its filters applied) to this file: Excel for a .xlsx name, JSON for
+    /// .json, otherwise CSV. The file is written in the background.
+    /// </summary>
+    public async Task<bool> ExportToFileAsync(string path)
+    {
+        if (_exportable is not { } definition) return false;
+        var title = _exportTitle;
+        var status = _exportStatus;
+
+        try
+        {
+            var (format, rows) = await Task.Run(() =>
+            {
+                var result = TableExport.ToResult(definition);
+                return (ResultExport.Write(result, path, spreadsheetSafe: true, title: title), result.Rows.Count);
+            });
+            if (status is not null)
+                status.Text = $"Exported {rows:N0} row{(rows == 1 ? "" : "s")} to {Path.GetFullPath(path)} as {ResultExport.Describe(format)}.";
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            if (status is not null) status.Text = $"Could not write {path}: {ex.Message}";
+            return false;
+        }
     }
 
     /// <summary>A built-in report's page while its result is being worked out.</summary>
